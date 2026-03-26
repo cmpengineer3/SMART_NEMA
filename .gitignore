@@ -1,0 +1,15 @@
+# Abaikan semua
+/*
+
+# Kecualikan 3 project yang diinginkan
+!MCU_CCO_CKP/
+!MCU_CCO2_CKP/
+!MCU_NEMA_CKP/
+
+# Izinkan semua isi di dalam 3 folder tersebut
+!MCU_CCO_CKP/**
+!MCU_CCO2_CKP/**
+!MCU_NEMA_CKP/**
+
+# Tetap izinkan .gitignore itu sendiri
+!.gitignore

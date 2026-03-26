@@ -1,0 +1,16 @@
+../Core/Src/com_mcu1.c:68:6:MCU1_Request_Init	8	static
+../Core/Src/com_mcu1.c:89:6:MCU1_UART_RxCallback	8	static
+../Core/Src/com_mcu1.c:129:6:MCU1_ClearBuffer	8	static,ignoring_inline_asm
+../Core/Src/com_mcu1.c:143:6:MCU1_SendRequest	56	static
+../Core/Src/com_mcu1.c:172:6:MCU1_RequestNodeCount	16	static
+../Core/Src/com_mcu1.c:198:6:MCU1_RequestNodeData	48	static
+../Core/Src/com_mcu1.c:239:6:MCU1_RegisNodeData	48	static
+../Core/Src/com_mcu1.c:280:6:MCU2_RequestMacCCO	632	static
+../Core/Src/com_mcu1.c:344:6:MCU2_RequestAllNodes	840	static
+../Core/Src/com_mcu1.c:424:6:MCU2_RegisAllNodes	840	static
+../Core/Src/com_mcu1.c:503:6:TEST_SendReqCnt	40	static
+../Core/Src/com_mcu1.c:518:5:Parse_JSON_Int	56	static
+../Core/Src/com_mcu1.c:536:6:Parse_JSON_String	64	static
+../Core/Src/com_mcu1.c:563:6:MCU2_SendControlGroup	80	static
+../Core/Src/com_mcu1.c:586:6:MCU2_SendControlIndividu	88	static
+../Core/Src/com_mcu1.c:611:6:Command_Handler	440	static
