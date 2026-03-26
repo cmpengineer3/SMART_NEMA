@@ -1,15 +1,14 @@
-# Abaikan semua
-/*
-
-# Kecualikan 3 project yang diinginkan
+# Abaikan file hasil build/debug
 !MCU_CCO_CKP/
 !MCU_CCO2_CKP/
 !MCU_NEMA_CKP/
-
-# Izinkan semua isi di dalam 3 folder tersebut
 !MCU_CCO_CKP/**
 !MCU_CCO2_CKP/**
 !MCU_NEMA_CKP/**
 
-# Tetap izinkan .gitignore itu sendiri
+# Abaikan folder Debug hasil kompilasi
+MCU_CCO_CKP/Debug/
+MCU_CCO2_CKP/Debug/
+MCU_NEMA_CKP/Debug/
+
 !.gitignore

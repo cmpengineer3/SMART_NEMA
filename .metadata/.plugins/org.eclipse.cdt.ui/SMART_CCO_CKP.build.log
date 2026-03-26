@@ -1,0 +1,10 @@
+14:46:45 **** Incremental Build of configuration Debug for project SMART_CCO_CKP ****
+make -j12 all 
+arm-none-eabi-size  SMART_CCO_CKP.elf 
+   text	   data	    bss	    dec	    hex	filename
+   4732	     12	   1572	   6316	   18ac	SMART_CCO_CKP.elf
+Finished building: default.size.stdout
+ 
+
+14:46:45 Build Finished. 0 errors, 0 warnings. (took 194ms)
+
