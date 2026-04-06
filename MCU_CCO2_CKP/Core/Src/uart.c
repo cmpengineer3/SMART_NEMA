@@ -144,15 +144,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
                 mqtt_data_ready = true;
             }
             // ✅ TAMBAHKAN DI SINI - tepat setelah blok if di atas
-//            if (rx_byte == '\n')
-//            {
-//                if (strstr((const char*)rxBuffer, "+QMTSTAT:0,1") != NULL ||
-//                    strstr((const char*)rxBuffer, "+QMTSTAT:0,2") != NULL ||
-//                    strstr((const char*)rxBuffer, "+QMTSTAT:0,3") != NULL)
-//                {
-//                    mqtt_disconnected = true;
-//                }
-//            }
+            if (rx_byte == '\n')
+            {
+                if (strstr((const char*)rxBuffer, "+QMTSTAT:0,1") != NULL ||
+                    strstr((const char*)rxBuffer, "+QMTSTAT:0,2") != NULL ||
+                    strstr((const char*)rxBuffer, "+QMTSTAT:0,3") != NULL)
+                {
+                    mqtt_disconnected = true;
+                }
+            }
         }
         else
         {

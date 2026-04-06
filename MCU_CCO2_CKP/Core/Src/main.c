@@ -307,7 +307,7 @@ int main(void)
           if (MQTT_Reconnect() == MQTT_OK) {
 //              SSD1306_Print("Reconnected!");
           } else {
-              HAL_Delay(5000); // tunggu sebelum coba lagi
+              HAL_Delay(3000); // tunggu sebelum coba lagi
           }
       }
       if (node_total_count != last_displayed_count)

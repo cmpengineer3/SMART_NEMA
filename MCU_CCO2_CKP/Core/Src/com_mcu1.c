@@ -628,12 +628,12 @@ void Command_Handler(void)
     }
 //     ✅ TAMBAHKAN DI SINI - tepat setelah blok if di atas
 
-	if (strstr((const char*)payload_data, "+QMTSTAT:0,1") != NULL ||
-		strstr((const char*)payload_data, "+QMTSTAT:0,2") != NULL ||
-		strstr((const char*)payload_data, "+QMTSTAT:0,3") != NULL)
-	{
-		mqtt_disconnected = true;
-	}
+//	if (strstr((const char*)payload_data, "+QMTSTAT:0,1") != NULL ||
+//		strstr((const char*)payload_data, "+QMTSTAT:0,2") != NULL ||
+//		strstr((const char*)payload_data, "+QMTSTAT:0,3") != NULL)
+//	{
+//		mqtt_disconnected = true;
+//	}
 
 
     // -----------------------------------------
