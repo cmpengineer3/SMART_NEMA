@@ -60,7 +60,7 @@ Param *ptr = &calc;
 dataMerge merge;
 dataMerge *addr = &merge;
 
-int pulse = 0;
+int pulse = 15999;
 int dimming = 0;
 int dutytest = 100, relaytest = 0;
 
