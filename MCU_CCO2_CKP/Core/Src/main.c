@@ -37,6 +37,8 @@ int retry_count=0;
 uint8_t mqtt_connected = 0;
 uint8_t mqtt_subscribed = 0;
 char last_mqtt_message[512] = {0};
+uint16_t last_displayed_count = 0xFFFF;  // nilai sentinel
+
 //char jml_node [10];
 /* USER CODE END PTD */
 
@@ -264,8 +266,8 @@ int main(void)
   SSD1309_Clear();
   SSD1309_ShowString(0,0,"Jumlah Node:");
 //  jml_node = atoi(node_total_count);
-  snprintf(jml_node, sizeof(jml_node), "%d", node_total_count);
-  SSD1309_ShowString(80,0,jml_node);
+//  snprintf(jml_node, sizeof(jml_node), "%d", node_total_count);
+//  SSD1309_ShowString(80,0,jml_node);
 
   uint32_t polling_timer  = HAL_GetTick();
 //  MQTT_UART_Init();
@@ -308,6 +310,14 @@ int main(void)
               HAL_Delay(5000); // tunggu sebelum coba lagi
           }
       }
+      if (node_total_count != last_displayed_count)
+      {
+          last_displayed_count = node_total_count;
+          SSD1309_ClearArea(80, 0, 48);  // clear area angka saja
+          snprintf(jml_node, sizeof(jml_node), "%d", node_total_count);
+          SSD1309_ShowString(80, 0, jml_node);
+      }
+      HAL_Delay(100);
 //      if (mqtt_data_ready){
 //    	  char topic[128];
 //		  char payload[512];

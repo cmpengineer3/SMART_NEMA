@@ -450,9 +450,10 @@ void MCU2_RegisAllNodes(void)
         return;
     }
 
-    SSD1309_ClearArea(80, 0, 120);
+    SSD1309_ClearArea(0, 0, 128);
+    SSD1309_ShowString(0, 0, "Jumlah Node:");
     snprintf(jml_node, sizeof(jml_node), "%d", node_total_count);
-    SSD1309_ShowString(80,0,jml_node);
+    SSD1309_ShowString(80, 0, jml_node);
     // -----------------------------------------
     // Step 2: Request setiap node dan kirim ke MQTT
     // -----------------------------------------
