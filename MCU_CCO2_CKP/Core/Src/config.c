@@ -14,11 +14,11 @@ int  broker_port     = 1883;
 
 
 /* Jika ingin menempel UID ke client_id, gabungkan sendiri di main sebelum connect */
-char client_id[64]   = "PJUTS_Client";
+char client_id[64]   = "PJU_NEMA";
 char username[64]    = "admin";      /* kosong = tanpa auth */
 char password[64]    = "xK645P7Np6LR";
 //==============================================================================================================
-////// Konfigurasi MQTT Broker
+//// Konfigurasi MQTT Broker
 //char broker_host[64] = "broker.hivemq.com";
 //int  broker_port     = 1883;
 //char client_id[64]   = "stm32Client";

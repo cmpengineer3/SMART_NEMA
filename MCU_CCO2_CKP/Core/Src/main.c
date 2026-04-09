@@ -37,8 +37,6 @@ int retry_count=0;
 uint8_t mqtt_connected = 0;
 uint8_t mqtt_subscribed = 0;
 char last_mqtt_message[512] = {0};
-uint16_t last_displayed_count = 0xFFFF;  // nilai sentinel
-
 //char jml_node [10];
 /* USER CODE END PTD */
 
@@ -141,12 +139,12 @@ int main(void)
 
    // Test AT
   UART_ClearBuffer();
-  for (int i = 0; i < 3; i++) {
-      UART_ClearBuffer();
-      UART_SendATCommand("ATE0");
-      if (UART_WaitForOK(2000)) break;
-      HAL_Delay(500);
-  }
+//  for (int i = 0; i < 3; i++) {
+//      UART_ClearBuffer();
+//      UART_SendATCommand("ATE0");
+//      if (UART_WaitForOK(2000)) break;
+//      HAL_Delay(500);
+//  }
 //  UART_SendATCommand("AT+QCFG=\"ledmode\",2");
   HAL_Delay(500);
 
@@ -171,9 +169,16 @@ int main(void)
   START:
   retry_count = 0;
   total_retry = 0;
+
+  for (int i = 0; i < 3; i++) {
+      UART_ClearBuffer();
+      UART_SendATCommand("ATE0");
+      if (UART_WaitForOK(2000)) break;
+      HAL_Delay(500);
+  }
   UART_SendATCommand("AT+QMTCFG=\"session\",0,1");
   UART_WaitForOK(3000);
-  UART_SendATCommand("AT+QMTCFG=\"keepalive\",0,60");
+  UART_SendATCommand("AT+QMTCFG=\"keepalive\",0,3600");
   UART_WaitForOK(3000);
   // ✅ FIX 4: Tutup koneksi lama sebelum open baru
   UART_SendATCommand("AT+QMTDISC=0");
@@ -266,8 +271,8 @@ int main(void)
   SSD1309_Clear();
   SSD1309_ShowString(0,0,"Jumlah Node:");
 //  jml_node = atoi(node_total_count);
-//  snprintf(jml_node, sizeof(jml_node), "%d", node_total_count);
-//  SSD1309_ShowString(80,0,jml_node);
+  snprintf(jml_node, sizeof(jml_node), "%d", node_total_count);
+  SSD1309_ShowString(80,0,jml_node);
 
   uint32_t polling_timer  = HAL_GetTick();
 //  MQTT_UART_Init();
@@ -307,17 +312,9 @@ int main(void)
           if (MQTT_Reconnect() == MQTT_OK) {
 //              SSD1306_Print("Reconnected!");
           } else {
-              HAL_Delay(3000); // tunggu sebelum coba lagi
+              HAL_Delay(5000); // tunggu sebelum coba lagi
           }
       }
-      if (node_total_count != last_displayed_count)
-      {
-          last_displayed_count = node_total_count;
-          SSD1309_ClearArea(80, 0, 48);  // clear area angka saja
-          snprintf(jml_node, sizeof(jml_node), "%d", node_total_count);
-          SSD1309_ShowString(80, 0, jml_node);
-      }
-      HAL_Delay(100);
 //      if (mqtt_data_ready){
 //    	  char topic[128];
 //		  char payload[512];

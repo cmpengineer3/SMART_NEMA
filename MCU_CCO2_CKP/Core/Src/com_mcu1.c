@@ -450,10 +450,9 @@ void MCU2_RegisAllNodes(void)
         return;
     }
 
-    SSD1309_ClearArea(0, 0, 128);
-    SSD1309_ShowString(0, 0, "Jumlah Node:");
+    SSD1309_ClearArea(80, 0, 120);
     snprintf(jml_node, sizeof(jml_node), "%d", node_total_count);
-    SSD1309_ShowString(80, 0, jml_node);
+    SSD1309_ShowString(80,0,jml_node);
     // -----------------------------------------
     // Step 2: Request setiap node dan kirim ke MQTT
     // -----------------------------------------
@@ -628,9 +627,9 @@ void Command_Handler(void)
     }
 //     ✅ TAMBAHKAN DI SINI - tepat setelah blok if di atas
 
-//	if (strstr((const char*)payload_data, "+QMTSTAT:0,1") != NULL ||
-//		strstr((const char*)payload_data, "+QMTSTAT:0,2") != NULL ||
-//		strstr((const char*)payload_data, "+QMTSTAT:0,3") != NULL)
+//	if (strstr((const char*)payload_data, "+QMTSTAT: 0,1") != NULL ||
+//		strstr((const char*)payload_data, "+QMTSTAT: 0,2") != NULL ||
+//		strstr((const char*)payload_data, "+QMTSTAT: 0,3") != NULL)
 //	{
 //		mqtt_disconnected = true;
 //	}

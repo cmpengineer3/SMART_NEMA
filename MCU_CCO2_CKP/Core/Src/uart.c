@@ -99,6 +99,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         // Cek apakah byte cocok dengan pattern
         if (rx_byte == QMTRECV_PATTERN[pattern_index])
         {
+            if (pattern_index == 0)  // ✅ awal pattern baru terdeteksi
+            {
+                rx_index = 0;
+                rxBuffer[0] = '\0';
+            }
             pattern_index++;
 
             if (pattern_index == 9)
@@ -126,6 +131,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
             if (rx_byte == '+')
             {
                 pattern_index = 1;
+                rx_index = 0;           // ✅ clear index saat mulai pattern baru
+                rxBuffer[0] = '\0';     // ✅ reset buffer
             }
             else
             {
@@ -146,9 +153,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
             // ✅ TAMBAHKAN DI SINI - tepat setelah blok if di atas
             if (rx_byte == '\n')
             {
-                if (strstr((const char*)rxBuffer, "+QMTSTAT:0,1") != NULL ||
-                    strstr((const char*)rxBuffer, "+QMTSTAT:0,2") != NULL ||
-                    strstr((const char*)rxBuffer, "+QMTSTAT:0,3") != NULL)
+                if (strstr((const char*)rxBuffer, "+QMTSTAT: 0,1") != NULL ||
+                    strstr((const char*)rxBuffer, "+QMTSTAT: 0,2") != NULL ||
+                    strstr((const char*)rxBuffer, "+QMTSTAT: 0,3") != NULL)
                 {
                     mqtt_disconnected = true;
                 }
