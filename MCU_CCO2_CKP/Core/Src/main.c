@@ -268,6 +268,7 @@ int main(void)
   MCU2_RequestMacCCO(mac_cco, sizeof(mac_cco));
   HAL_Delay(100);
   MCU2_RegisAllNodes();
+  HAL_Delay(2000);
   SSD1309_Clear();
   SSD1309_ShowString(0,0,"Jumlah Node:");
 //  jml_node = atoi(node_total_count);

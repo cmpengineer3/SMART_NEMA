@@ -999,9 +999,9 @@ void Save_Node (void)
 //	UART_CCO_SendCmdWait("+++", NULL, 1000, 0);
 //	HAL_Delay(delays);
 	UART_CCO_SendCmdWait("AT+MAC?", "+MAC:", 1000, 2000);
-	HAL_Delay(delays);
+	HAL_Delay(500);
 	TOPOINFO();
-	HAL_Delay(delays);
+	HAL_Delay(500);
 //	UART_CCO_SendCmdWait("AT+EXIT", "OK", 1000, 1000);
 //	HAL_Delay(delays);
 }

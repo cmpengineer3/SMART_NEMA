@@ -274,11 +274,11 @@ void MCU1_ProcessMCU2Request(void)
     if (strstr(mcu2_rx_buffer, "REQ:CNT") != NULL)
     {
     	Save_Node();
-        HAL_Delay(500);
+        HAL_Delay(200);
 //          Send_GPIO_Toggle();
         // 2. Polling semua STA dengan AT+SENDEX
-        CCO_PollAllSTA_SENDEX();
-        HAL_Delay(500);
+//        CCO_PollAllSTA_SENDEX();
+//        HAL_Delay(500);
         MCU1_SendNodeCount();
     }
     // Cek request node by index
@@ -289,6 +289,27 @@ void MCU1_ProcessMCU2Request(void)
 
         if (index >= 0)
         {
+//            MCU1_SendNodeByIndex((uint16_t)index);
+            // Poll STA yang diminta saja, bukan semua
+            if ((uint16_t)index < mac_sta_count)
+            {
+                // Poll satu STA ini dulu sebelum kirim data
+                char payload[128];
+                snprintf(payload, sizeof(payload),
+                         "\"DATA\":{\"UID\":\"%s\",\"HEADER\":\"RQ\"}",
+                         mac_cco);
+                UART_CCO_ClearRecvBuffer();
+                if (CCO_SendData_SENDEX(mac_sta_list[index].mac_sta, payload))
+                {
+                    char response[256];
+                    if (CCO_WaitAndParse_RECV(mac_sta_list[index].mac_sta,
+                                             response, sizeof(response),
+                                             POLLING_TIMEOUT_MS))
+                    {
+                        CCO_ParseSTAResponse(response);
+                    }
+                }
+            }
             MCU1_SendNodeByIndex((uint16_t)index);
         }
     }

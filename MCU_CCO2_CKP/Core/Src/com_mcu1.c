@@ -32,7 +32,7 @@
 // ============================================================================
 
 #define MCU1_UART           huart2          // UART untuk komunikasi dengan MCU1
-#define MCU1_TIMEOUT_MS     10000            // Timeout tunggu response dari MCU1
+#define MCU1_TIMEOUT_MS     15000            // Timeout tunggu response dari MCU1
 #define MCU1_RETRY_COUNT    2               // Retry jika gagal
 
 // ============================================================================
@@ -173,18 +173,33 @@ bool MCU1_RequestNodeCount(void)
 {
     for (int retry = 0; retry < MCU1_RETRY_COUNT; retry++)
     {
-        snprintf(debug,sizeof(debug), "coba itung");
+        snprintf(debug, sizeof(debug), "coba itung");
+
         if (MCU1_SendRequest("REQ:CNT", MCU1_TIMEOUT_MS))
         {
-            // Parse response "CNT:X"
-            snprintf(debug,sizeof(debug), "REQ:CNT");
+            // Berhasil dalam timeout — parse langsung
             char *ptr = strstr((const char*)mcu1_rx_buffer, "CNT:");
             if (ptr != NULL)
             {
                 node_total_count = (uint16_t)atoi(ptr + 4);
+                snprintf(debug, sizeof(debug), "CNT OK: %d", node_total_count);
                 return true;
             }
         }
+        else
+        {
+            // Timeout — tapi cek dulu apakah data sudah ada di buffer
+            // (CNT bisa datang tepat saat timeout terjadi)
+            HAL_Delay(500);  // beri waktu 500ms ekstra untuk data masuk
+            char *ptr = strstr((const char*)mcu1_rx_buffer, "CNT:");
+            if (ptr != NULL)
+            {
+                node_total_count = (uint16_t)atoi(ptr + 4);
+                snprintf(debug, sizeof(debug), "CNT late: %d", node_total_count);
+                return true;  // selamatkan data yang terlambat
+            }
+        }
+
         HAL_Delay(200);
     }
 
