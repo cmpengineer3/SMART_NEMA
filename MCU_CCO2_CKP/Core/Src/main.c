@@ -283,24 +283,24 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-//      if (HAL_GetTick() - polling_timer > POLLING_INTERVAL_MS)
-//      {
-//	      char json_X_payload[800];
-//
-//
-//          snprintf(json_X_payload, sizeof(json_X_payload), "{\"H\":\"D\",\"STA\":\"FFFF00000004\",\"V\":221.2,\"I\":20.2,\"PWM\":100,\"R\":1}");
-//		  size_t lenX = strlen(json_X_payload);
-//		  uint16_t crcX = Modbus_CRC16((const unsigned char *)json_X_payload, lenX);
-//		  char json_X_with_crc[1000];
-//			  snprintf(json_X_with_crc, sizeof(json_X_with_crc),
-//					  "{\"CRC\":\"%04X\",\"DATA\":%s}", crcX, json_X_payload);
-//	      MQTT_Publish(mqtt_topic_pub,json_X_with_crc,1,0);
-//		  HAL_Delay(1000);
-//
-//
-//
-//          polling_timer = HAL_GetTick();
-//      }
+      if (HAL_GetTick() - polling_timer > POLLING_INTERVAL_MS)
+      {
+	      char json_X_payload[800];
+
+
+          snprintf(json_X_payload, sizeof(json_X_payload), "{\"H\":\"K\",\"La\":0,\"Lo\":0,\"VR\":221.2,\"VS\":0,\"VT\":220.14,\"IR\":0.54,\"IS\":0,\"IT\":57.2,\"PFR\":0.9,\"PFS\":0,\"PFT\":0.9,\"WH\":3.5,\"W\":300.23,\"DI1\":0,\"DI2\":1,\"DO1\":0,\"DO2\":1}");
+		  size_t lenX = strlen(json_X_payload);
+		  uint16_t crcX = Modbus_CRC16((const unsigned char *)json_X_payload, lenX);
+		  char json_X_with_crc[1000];
+			  snprintf(json_X_with_crc, sizeof(json_X_with_crc),
+					  "{\"CRC\":\"%04X\",\"DATA\":%s}", crcX, json_X_payload);
+	      MQTT_Publish(mqtt_topic_pub,json_X_with_crc,1,0);
+		  HAL_Delay(1000);
+
+
+
+          polling_timer = HAL_GetTick();
+      }
       if (mqtt_data_ready)
         {
             Command_Handler();  // Otomatis ekstrak dan proses payload
@@ -650,10 +650,10 @@ static void MX_USART3_UART_Init(void)
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
-  huart3.Init.BaudRate = 115200;
-  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.BaudRate = 9600;
+  huart3.Init.WordLength = UART_WORDLENGTH_9B;
   huart3.Init.StopBits = UART_STOPBITS_1;
-  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Parity = UART_PARITY_EVEN;
   huart3.Init.Mode = UART_MODE_TX_RX;
   huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
