@@ -26,6 +26,8 @@
 #include "config.h"
 #include "com_mcu1.h"
 #include "ssd1306.h"
+#include "HLW8110_Access.h"
+#include "HLW8110_Calc.h"
 #include <stdlib.h>
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -37,6 +39,8 @@ int retry_count=0;
 uint8_t mqtt_connected = 0;
 uint8_t mqtt_subscribed = 0;
 char last_mqtt_message[512] = {0};
+uint32_t hlwReadTick = 0;
+bool NL = false;    /* No Load flag per channel */
 //char jml_node [10];
 /* USER CODE END PTD */
 
@@ -134,6 +138,9 @@ int main(void)
 
   UART_Init_Buffer();
   MCU1_Request_Init();
+  HLW_Activate_Freq_Measurement(&huart3);
+  HAL_Delay(10);
+  HAL_UART_Receive_IT(&huart3, (uint8_t*)&rxtxVar.dataRx, 1);
 
   HAL_Delay(3000);  // Tunggu modem siap
 
@@ -276,6 +283,7 @@ int main(void)
   SSD1309_ShowString(80,0,jml_node);
 
   uint32_t polling_timer  = HAL_GetTick();
+  hlwReadTick = HAL_GetTick();
 //  MQTT_UART_Init();
   /* USER CODE END 2 */
 
@@ -288,7 +296,7 @@ int main(void)
 	      char json_X_payload[800];
 
 
-          snprintf(json_X_payload, sizeof(json_X_payload), "{\"H\":\"K\",\"La\":0,\"Lo\":0,\"VR\":221.2,\"VS\":0,\"VT\":220.14,\"IR\":0.54,\"IS\":0,\"IT\":57.2,\"PFR\":0.9,\"PFS\":0,\"PFT\":0.9,\"WH\":3.5,\"W\":300.23,\"DI1\":0,\"DI2\":1,\"DO1\":0,\"DO2\":1}");
+          snprintf(json_X_payload, sizeof(json_X_payload), "{\"H\":\"K\",\"JS\":2,\"La\":0,\"Lo\":0,\"VR\":221.2,\"VS\":0,\"VT\":220.14,\"IR\":0.54,\"IS\":0,\"IT\":0.57,\"PFR\":0.9,\"PFS\":0,\"PFT\":0.9,\"WH\":3.5,\"W\":300.23,\"DI1\":0,\"DI2\":1,\"DO1\":0,\"DO2\":1}");
 		  size_t lenX = strlen(json_X_payload);
 		  uint16_t crcX = Modbus_CRC16((const unsigned char *)json_X_payload, lenX);
 		  char json_X_with_crc[1000];
@@ -296,11 +304,94 @@ int main(void)
 					  "{\"CRC\":\"%04X\",\"DATA\":%s}", crcX, json_X_payload);
 	      MQTT_Publish(mqtt_topic_pub,json_X_with_crc,1,0);
 		  HAL_Delay(1000);
-
-
-
           polling_timer = HAL_GetTick();
       }
+      if (HAL_GetTick() - hlwReadTick > 5000)
+          {
+              for (int i = 2; i >= 0; i--)
+              {
+                  /* Pilih channel via GPIO SELECT
+                   * i=2 → SEL1=LOW,  SEL2=LOW   (netral)
+                   * i=1 → SEL1=HIGH, SEL2=LOW   (fasa R)
+                   * i=0 → SEL1=LOW,  SEL2=HIGH  (fasa S)  */
+                  if (i == 1)
+                  {
+                      HAL_GPIO_WritePin(SELECT_HLWIN1_GPIO_Port, SELECT_HLWIN1_Pin, GPIO_PIN_SET);
+                      HAL_GPIO_WritePin(SELECT_HLWIN2_GPIO_Port, SELECT_HLWIN2_Pin, GPIO_PIN_RESET);
+                  }
+                  else if (i == 0)
+                  {
+                      HAL_GPIO_WritePin(SELECT_HLWIN1_GPIO_Port, SELECT_HLWIN1_Pin, GPIO_PIN_RESET);
+                      HAL_GPIO_WritePin(SELECT_HLWIN2_GPIO_Port, SELECT_HLWIN2_Pin, GPIO_PIN_SET);
+                  }
+                  else /* i == 2 */
+                  {
+                      HAL_GPIO_WritePin(SELECT_HLWIN1_GPIO_Port, SELECT_HLWIN1_Pin, GPIO_PIN_RESET);
+                      HAL_GPIO_WritePin(SELECT_HLWIN2_GPIO_Port, SELECT_HLWIN2_Pin, GPIO_PIN_RESET);
+                  }
+
+                  /* --- EMU Status: cek no-load --- */
+                  reqADDR = REG_EMUstatus;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(50);
+                  NL = Is_NopldA_Active();
+
+                  /* --- Tegangan: RmsU + RmsUC --- */
+                  reqADDR = REG_RmsU;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  reqADDR = REG_RmsUC;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  param.RMSU[i] = Val_Vrms();
+
+                  /* --- Arus: RmsIA + RmsIAC --- */
+                  reqADDR = REG_RmsIA;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  reqADDR = REG_RmsIAC;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  param.RMSIA[i] = Val_Irms();
+
+                  /* --- Frekuensi: RmsUC + Ufreq --- */
+                  reqADDR = REG_RmsUC;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  reqADDR = REG_Ufreq;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  param.Frequency[i] = Val_Frequency();
+
+                  /* --- Daya Aktif: PowerPA + PowerPAC --- */
+                  reqADDR = REG_PowerPA;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  reqADDR = REG_PowerPAC;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  param.ActivePower[i] = Val_Power();
+
+                  /* --- Daya Semu: PowerS + PowerSC --- */
+                  reqADDR = REG_PowerS;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  reqADDR = REG_PowerSC;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  param.Apparent[i] = Val_Apparent();
+
+                  /* --- Power Factor: PF --- */
+                  reqADDR = REG_PF;
+                  HLW_Request(&huart3, reqADDR);
+                  HAL_Delay(10);
+                  param.PowerFactor[i] = Val_PowerFactor(i);
+
+                  HAL_Delay(10);
+              }
+
+              hlwReadTick = HAL_GetTick();
+          }
       if (mqtt_data_ready)
         {
             Command_Handler();  // Otomatis ekstrak dan proses payload

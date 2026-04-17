@@ -50,9 +50,9 @@ uint32_t DataRCV_HLW;
 int indx_HLW;
 uint8_t buffer_HLW[25];
 
-#define koefisienVoltage 3.006
+#define koefisienVoltage 3.083
 #define koefisienCurrent 0.31
-#define koefisienPower 0.909
+#define koefisienPower 0.930
 
 Param calc;
 Param *ptr = &calc;
