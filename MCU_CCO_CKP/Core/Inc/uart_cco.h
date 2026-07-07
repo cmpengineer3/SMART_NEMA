@@ -18,22 +18,22 @@
 #define RX_BUFFER_CCO 512
 
 // ========== KONFIGURASI POLLING ==========
-#define POLLING_TIMEOUT_MS      10000    // Timeout tunggu response STA (3 detik)
-#define POLLING_MAX_RETRY       1       // Maksimal retry per STA
-#define POLLING_DELAY_BETWEEN   300     // Delay antar polling STA (ms)
-#define POLLING_INTERVAL_MS    50000   // Interval polling semua STA (20 detik)
+#define POLLING_TIMEOUT_MS      10000
+#define POLLING_MAX_RETRY       1
+#define POLLING_DELAY_BETWEEN   300
+#define POLLING_INTERVAL_MS    50000
 
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 
 
 // ========== BUFFER VARIABLES ==========
-extern char rxBuffer[];                 // Buffer untuk receive (monitoring via Live Expression)
-extern char recvBuffer[];               // Buffer untuk proses (parsing +RECV)
+extern char rxBuffer[];
+extern char recvBuffer[];
 extern char txBuffer[200];
 extern char mac_cco[];
 
-extern volatile bool recv_data_ready;   // Flag: ada +RECV siap diproses
+extern volatile bool recv_data_ready;
 
 extern const int max_retry;
 extern int attempt_debug;
@@ -41,21 +41,18 @@ extern uint32_t delays;
 
 // -------------------- Struct STA --------------------
 typedef struct {
-    char mac_sta[13];      // MAC 12 char + null
+    char mac_sta[13];
     double La;
     double Lo;
-    uint16_t v;        // voltage (unit sesuai implementasimu)
-    uint16_t i;        // current
-    uint16_t p;        // power
-    uint8_t relay;     // relay state (0/1)
-    uint8_t dim;       // pwm value (0..255)
-    bool cond;         // kondisi STA (true = aktif / menerima heartbeat)
-    uint8_t retry_count;   // Counter untuk retry polling
+    uint16_t v;
+    uint16_t i;
+    uint16_t p;
+    uint8_t relay;
+    uint8_t dim;
+    bool cond;
+    uint8_t retry_count;
 } STA_Node;
 
-// Array penyimpanan STA (struct) — berdiri sendiri
-//STA_Node sta_node_list[250];
-//uint16_t sta_node_count = 0;
 
 extern STA_Node mac_sta_list[250];
 extern uint16_t mac_sta_count;

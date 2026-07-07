@@ -3,7 +3,6 @@
  *
  *  Created on: Dec 31, 2025
  *      Author: firza
- *      Modified: Optimized GPS handling with priority and auto-stop
  */
 #include "function.h"
 #include <string.h>
@@ -72,8 +71,8 @@ char time_local[10];
 char new_string[number_of_variable][string_length_size];
 char gga_string[number_of_variable][string_length_size];
 
-volatile uint8_t rxData;                    // Volatile untuk ISR
-char gpsBuffer[256];                        // Dikurangi dari 512, GPGGA max ~82 chars
+volatile uint8_t rxData;
+char gpsBuffer[256];
 volatile uint16_t gpsIndex = 0;
 int hh, mm, ss;
 
@@ -81,10 +80,10 @@ float sendLat = 0.0f;
 float sendLng = 0.0f;
 
 // ===== GPS STATE MANAGEMENT =====
-volatile bool gps_sentence_ready = false;   // Flag: ada sentence siap diproses
-volatile bool gps_enabled = true;           // Flag: GPS masih aktif
-bool gps_fix_obtained = false;              // Flag: sudah dapat fix valid
-uint8_t gps_fix_quality = 0;                // 0=invalid, 1=GPS fix, 2=DGPS fix
+volatile bool gps_sentence_ready = false;
+volatile bool gps_enabled = true;
+bool gps_fix_obtained = false;
+uint8_t gps_fix_quality = 0;
 
 // ==================== UART1 (STA) FUNCTIONS ====================
 
@@ -101,18 +100,12 @@ void UART_STA_ClearBuffer(void)
     memset(rxBuffer, 0, RX_BUFFER_STA);
 }
 
-/**
- * @brief UART RX Complete Callback - OPTIMIZED
- *        UART1 dan UART2 dihandle dengan minimal processing
- */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART1)
     {
-        // ===== UART1 (STA Communication) - HIGH PRIORITY =====
         uint32_t current_tick = HAL_GetTick();
 
-        // Auto clear jika jeda > 100ms
         if ((current_tick - last_rx_tick) > 100 && rx_index > 0)
         {
             rx_index = 0;
@@ -120,13 +113,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         }
         last_rx_tick = current_tick;
 
-        // Simpan byte
         if (rx_index < RX_BUFFER_STA - 1)
         {
             rxBuffer[rx_index++] = rx_byte;
             rxBuffer[rx_index] = '\0';
 
-            // Detect +RECV complete (diakhiri newline)
             if (rx_byte == '\n' && strstr(rxBuffer, "+RECV:") != NULL)
             {
                 if (!recv_data_ready)
@@ -148,15 +139,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     }
     else if (huart->Instance == USART2)
     {
-        // ===== UART2 (GPS) - LOW PRIORITY, MINIMAL PROCESSING =====
-        // Hanya proses jika GPS masih enabled
         if (gps_enabled)
         {
             if (gpsIndex < sizeof(gpsBuffer) - 1)
             {
                 gpsBuffer[gpsIndex++] = rxData;
 
-                // Set flag hanya saat dapat newline (akhir NMEA sentence)
                 if (rxData == '\n')
                 {
                     gpsBuffer[gpsIndex] = '\0';
@@ -166,13 +154,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
             }
             else
             {
-                // Buffer overflow protection
                 gpsIndex = 0;
             }
 
             HAL_UART_Receive_IT(&huart2, (uint8_t*)&rxData, 1);
         }
-        // Jika gps_enabled = false, TIDAK restart interrupt = GPS berhenti
     }
 }
 
@@ -637,9 +623,7 @@ Param* HLW_GetData(void)
 //                        GPS FUNCTIONS - OPTIMIZED
 // ============================================================================
 
-/**
- * @brief Initialize GPS UART dengan prioritas rendah
- */
+
 void UART_GPS_Init(void)
 {
     gpsIndex = 0;
@@ -654,18 +638,14 @@ void UART_GPS_Init(void)
     HAL_UART_Receive_IT(&huart2, (uint8_t*)&rxData, 1);
 }
 
-/**
- * @brief Stop GPS reception (hemat CPU setelah dapat fix)
- */
+
 void GPS_Stop(void)
 {
     gps_enabled = false;
     HAL_UART_AbortReceive_IT(&huart2);  // Stop interrupt
 }
 
-/**
- * @brief Restart GPS reception jika diperlukan
- */
+
 void GPS_Start(void)
 {
     gps_enabled = true;
@@ -674,25 +654,19 @@ void GPS_Start(void)
     HAL_UART_Receive_IT(&huart2, (uint8_t*)&rxData, 1);
 }
 
-/**
- * @brief Check apakah GPS sudah mendapat fix valid
- */
+
 bool GPS_HasFix(void)
 {
     return gps_fix_obtained;
 }
 
-/**
- * @brief Get GPS fix quality (0=invalid, 1=GPS, 2=DGPS)
- */
+
 uint8_t GPS_GetFixQuality(void)
 {
     return gps_fix_quality;
 }
 
-/**
- * @brief Convert latitude dari NMEA format ke decimal degrees
- */
+
 static void latitudeConv(void)
 {
     if (gga_string[2][0] == '\0')
@@ -712,9 +686,7 @@ static void latitudeConv(void)
     sendLat = latitude;
 }
 
-/**
- * @brief Convert longitude dari NMEA format ke decimal degrees
- */
+
 static void longitudeConv(void)
 {
     if (gga_string[4][0] == '\0')
@@ -734,35 +706,27 @@ static void longitudeConv(void)
     sendLng = longitude;
 }
 
-/**
- * @brief Process GPS data - DIPANGGIL DARI MAIN LOOP, BUKAN ISR!
- *        Akan otomatis stop setelah mendapat fix valid
- *
- * @param auto_stop_on_fix  true = stop GPS setelah dapat fix
- */
 void GPS_ProcessData(bool auto_stop_on_fix)
 {
-    // Skip jika tidak ada data baru atau GPS sudah disabled
+
     if (!gps_sentence_ready || !gps_enabled)
         return;
 
     // Reset flag
     gps_sentence_ready = false;
 
-    // Hanya proses GPGGA sentence
+
     if (strncmp(gpsBuffer, "$GPGGA", 6) != 0)
         return;
 
-    // Parse NMEA fields
+
     int varIdx = 0;
     int lenIdx = 0;
     int fieldIdx = 0;
     int bufLen = strlen(gpsBuffer);
 
-    // Clear parsing buffer
     memset(new_string, 0, sizeof(new_string));
 
-    // Parse comma-separated fields
     for (varIdx = 0; varIdx <= bufLen && fieldIdx < number_of_variable; varIdx++)
     {
         char c = gpsBuffer[varIdx];
@@ -780,12 +744,11 @@ void GPS_ProcessData(bool auto_stop_on_fix)
         }
     }
 
-    // Verify it's GPGGA and copy to gga_string
+
     if (strcmp(new_string[0], "$GPGGA") == 0)
     {
         memcpy(gga_string, new_string, sizeof(gga_string));
 
-        // Parse time (field 1): HHMMSS.sss
         if (gga_string[1][0] != '\0')
         {
             sscanf(gga_string[1], "%2d%2d%2d", &hh, &mm, &ss);
@@ -793,26 +756,21 @@ void GPS_ProcessData(bool auto_stop_on_fix)
             snprintf(time_local, sizeof(time_local), "%02d:%02d:%02d", hh, mm, ss);
         }
 
-        // Parse fix quality (field 6)
-        // 0 = invalid, 1 = GPS fix, 2 = DGPS fix, etc.
         gps_fix_quality = 0;
         if (gga_string[6][0] != '\0')
         {
             gps_fix_quality = atoi(gga_string[6]);
         }
 
-        // Convert coordinates jika ada fix
         if (gps_fix_quality >= 1)
         {
             latitudeConv();
             longitudeConv();
 
-            // Validasi koordinat (Indonesia: Lat -11 to 6, Lng 95 to 141)
             if (sendLat != 0.0f && sendLng != 0.0f)
             {
                 gps_fix_obtained = true;
 
-                // Auto stop jika diminta dan sudah dapat fix
                 if (auto_stop_on_fix)
                 {
                     GPS_Stop();
@@ -822,18 +780,12 @@ void GPS_ProcessData(bool auto_stop_on_fix)
     }
 }
 
-/**
- * @brief Get current GPS coordinates
- */
 void GPS_GetCoordinates(float *lat, float *lng)
 {
     if (lat != NULL) *lat = sendLat;
     if (lng != NULL) *lng = sendLng;
 }
 
-/**
- * @brief Get current GPS time string
- */
 const char* GPS_GetTimeString(void)
 {
     return time_local;
@@ -843,19 +795,13 @@ const char* GPS_GetTimeString(void)
 //                        NVIC PRIORITY CONFIGURATION
 // ============================================================================
 
-/*** *
- * Panggil fungsi ini di main() sebelum UART_GPS_Init()
- */
 void UART_ConfigurePriorities(void)
 {
-    // UART1 (STA Communication) - HIGH PRIORITY
-    // PreemptPriority: 0-15, SubPriority: 0-15 (tergantung NVIC config)
-    HAL_NVIC_SetPriority(USART1_IRQn, 1, 0);  // Priority 1 (tinggi)
 
-    // UART2 (GPS) - LOW PRIORITY
-    HAL_NVIC_SetPriority(USART2_IRQn, 3, 0);  // Priority 3 (lebih rendah)
+    HAL_NVIC_SetPriority(USART1_IRQn, 1, 0);
 
-    // Pastikan interrupt enabled
+    HAL_NVIC_SetPriority(USART2_IRQn, 3, 0);
+
     HAL_NVIC_EnableIRQ(USART1_IRQn);
     HAL_NVIC_EnableIRQ(USART2_IRQn);
 }

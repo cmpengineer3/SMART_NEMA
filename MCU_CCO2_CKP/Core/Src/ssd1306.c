@@ -1,15 +1,6 @@
-/**
- * @file ssd1309_v3.c
- * @brief SSD1309 OLED I2C Driver - Versi 3 (Clear Fixed)
- */
 
 #include "ssd1306.h"
-
-/* ==================== PRIVATE VARIABLES ==================== */
-
 static I2C_HandleTypeDef *ssd1309_i2c;
-
-/* ==================== FONT 5x8 ==================== */
 
 static const uint8_t font5x8[][5] = {
     {0x00,0x00,0x00,0x00,0x00}, // ' ' (32)
@@ -174,52 +165,48 @@ static void SSD1309_SendData(uint8_t dat)
 HAL_StatusTypeDef SSD1309_Init(I2C_HandleTypeDef *hi2c)
 {
     ssd1309_i2c = hi2c;
-
-    // Tunggu OLED siap
     HAL_Delay(100);
 
-    // Cek device
     if (HAL_I2C_IsDeviceReady(ssd1309_i2c, SSD1309_I2C_ADDR, 3, 100) != HAL_OK) {
         return HAL_ERROR;
     }
 
-    // === INIT SEQUENCE ===
-    SSD1309_SendCmd(0xAE);  // Display OFF
+    SSD1309_SendCmd(0xAE);
 
-    SSD1309_SendCmd(0xD5);  // Set clock
+    SSD1309_SendCmd(0xD5);
     SSD1309_SendCmd(0x80);
 
-    SSD1309_SendCmd(0xA8);  // Set multiplex
-    SSD1309_SendCmd(0x3F);  // 64 lines
+    SSD1309_SendCmd(0xA8);
+    SSD1309_SendCmd(0x3F);
 
-    SSD1309_SendCmd(0xD3);  // Set display offset
+    SSD1309_SendCmd(0xD3);
     SSD1309_SendCmd(0x00);
 
-    SSD1309_SendCmd(0x40);  // Set start line = 0
-
-    SSD1309_SendCmd(0x8D);  // Charge pump
-    SSD1309_SendCmd(0x14);  // Enable
-
-    SSD1309_SendCmd(0x20);  // Memory addressing mode
-    SSD1309_SendCmd(0x02);  // Page addressing mode
-
-    SSD1309_SendCmd(0xA1);  // Segment remap
-    SSD1309_SendCmd(0xC8);  // COM scan direction
-
-    SSD1309_SendCmd(0xDA);  // COM pins config
-    SSD1309_SendCmd(0x12);
-
-    SSD1309_SendCmd(0x81);  // Contrast
-    SSD1309_SendCmd(0xCF);
-
-    SSD1309_SendCmd(0xD9);  // Pre-charge
-    SSD1309_SendCmd(0xF1);
-
-    SSD1309_SendCmd(0xDB);  // VCOMH
     SSD1309_SendCmd(0x40);
 
-    SSD1309_SendCmd(0xA4);  // Display from RAM
-    SSD1309_SendCmd(0xA6);  // Normal display
+    SSD1309_SendCmd(0x8D);
+    SSD1309_SendCmd(0x14);
+
+    SSD1309_SendCmd(0x20);
+    SSD1309_SendCmd(0x02);
+
+    SSD1309_SendCmd(0xA1);
+    SSD1309_SendCmd(0xC8);
+
+    SSD1309_SendCmd(0xDA);
+    SSD1309_SendCmd(0x12);
+
+    SSD1309_SendCmd(0x81);
+    SSD1309_SendCmd(0xCF);
+
+    SSD1309_SendCmd(0xD9);
+    SSD1309_SendCmd(0xF1);
+
+    SSD1309_SendCmd(0xDB);
+    SSD1309_SendCmd(0x40);
+
+    SSD1309_SendCmd(0xA4);
+    SSD1309_SendCmd(0xA6);
 
     // CLEAR SEBELUM DISPLAY ON!
     SSD1309_Clear();

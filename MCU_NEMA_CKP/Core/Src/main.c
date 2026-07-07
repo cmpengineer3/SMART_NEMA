@@ -122,12 +122,11 @@ int main(void)
             HAL_Delay(100);
     	} else {
             // Gagal dapat MAC setelah 3x percobaan
-            // Program tetap lanjut, tapi beri indikator
             blinkLED(LED_IND_Port, LED_IND_Pin, 3, 100);
         }
     } else {
         // Gagal dapat MAC setelah 3x percobaan
-        // Program tetap lanjut, tapi beri indikator
+    	bool mac_status = Save_Mac();
         blinkLED(LED_IND_Port, LED_IND_Pin, 3, 100);
     }
   HAL_Delay(300);
@@ -151,6 +150,7 @@ int main(void)
 	  ProcessRecv();
       Set_PWM1_Duty(dutytest);
       GPS_ProcessData(true);
+      HLW_ReadData();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

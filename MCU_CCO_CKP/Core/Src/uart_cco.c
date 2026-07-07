@@ -5,12 +5,9 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-// ============================================================================
-//                         BUFFER VARIABLES
-// ============================================================================
 
-char rxBuffer[RX_BUFFER_CCO];           // Buffer untuk receive (monitoring)
-char recvBuffer[RX_BUFFER_CCO];         // Buffer untuk proses (parsing)
+char rxBuffer[RX_BUFFER_CCO];
+char recvBuffer[RX_BUFFER_CCO];
 char txBuffer[200];
 char mac_cco[13];
 
@@ -21,7 +18,6 @@ static uint8_t rx_byte;
 static volatile uint16_t rx_index = 0;
 static volatile uint32_t last_rx_tick_cco = 0;
 
-// Flag untuk menandakan ada +RECV siap diproses
 volatile bool recv_data_ready = false;
 
 const int max_retry = 3;
@@ -31,10 +27,6 @@ uint32_t delays = 5000;
 
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
-
-// ============================================================================
-//                         NODE VARIABLES
-// ============================================================================
 
 STA_Node mac_sta_list[250];
 uint16_t mac_sta_count = 0;
@@ -47,7 +39,7 @@ uint16_t mac_wh_count = 0;
 
 char mac_wh_new_list[250][13];
 uint16_t mac_wh_new_count = 0;
-//===========================================PENGIRIMAN DAN PENERIMAAN DATA===========================
+
 void UART_CCO_ClearBuffer(void)
 {
     memset(rxBuffer, 0, RX_BUFFER_CCO);
@@ -77,14 +69,12 @@ void UART_CCO_Init(void)
     HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
 }
 
-/* callback interrupt */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART1)
     {
         uint32_t current_tick = HAL_GetTick();
 
-        // Auto clear jika jeda > 100ms (mencegah data lama menumpuk)
         if ((current_tick - last_rx_tick_cco) > 100 && rx_index > 0)
         {
             rx_index = 0;
@@ -92,32 +82,27 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         }
         last_rx_tick_cco = current_tick;
 
-        // Simpan byte ke rxBuffer
         if (rx_index < RX_BUFFER_CCO - 1)
         {
             rxBuffer[rx_index++] = rx_byte;
             rxBuffer[rx_index] = '\0';
 
-            // ══════════════════════════════════════════════════════════════
-            // DETECT +RECV: dan COPY ke recvBuffer (SAMA SEPERTI STA)
-            // ══════════════════════════════════════════════════════════════
             if (rx_byte == '\n' && strstr(rxBuffer, "+RECV:") != NULL)
             {
-                // Copy ke recvBuffer jika belum ada data pending
+
                 if (!recv_data_ready)
                 {
                     strcpy(recvBuffer, rxBuffer);
                     recv_data_ready = true;
                 }
 
-                // Clear rxBuffer setelah copy
                 rx_index = 0;
                 memset(rxBuffer, 0, RX_BUFFER_CCO);
             }
         }
         else
         {
-            // Buffer full, clear
+
             rx_index = 0;
             memset(rxBuffer, 0, RX_BUFFER_CCO);
         }
@@ -133,12 +118,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void UART_CCO_SendRaw(const char *s)
 {
-    // Simpan data TX untuk Live Expression
     strncpy(uart_tx_last, s, sizeof(uart_tx_last) - 1);
     uart_tx_last[sizeof(uart_tx_last) - 1] = '\0';
     uart_tx_length = strlen(s);
 
-    // Kirim data ke PLC
     HAL_UART_Transmit(&huart1, (uint8_t*)s, uart_tx_length, 1000);
 }
 
@@ -175,7 +158,6 @@ bool UART_CCO_SendCmdWait(const char *cmd, const char *urc, uint32_t t_ok, uint3
     if (!UART_CCO_WaitFor(urc, t_urc))
         return false;
 
-    /* khusus urc MAC */
     if (strstr(urc, "+MAC") != NULL)
     {
         char *p = strstr(rxBuffer, "+MAC:");
@@ -183,7 +165,6 @@ bool UART_CCO_SendCmdWait(const char *cmd, const char *urc, uint32_t t_ok, uint3
             strncpy(mac_cco, p + 5, sizeof(mac_cco) - 1);
     }
 
-    //khusus untuk TOPOINFO
     if (strstr(urc, "+TOPOINFO") != NULL)
     {
         char buffer_copy[RX_BUFFER_CCO];
@@ -199,7 +180,7 @@ bool UART_CCO_SendCmdWait(const char *cmd, const char *urc, uint32_t t_ok, uint3
             line = strtok(NULL, "\r\n");
         }
     }
-    //khusus untuk WHINFO
+
     if (strstr(urc, "+WHINFO") != NULL)
     {
         char buffer_copy[RX_BUFFER_CCO];
@@ -225,10 +206,9 @@ void UART_CCO_ParseTopoInfo(char *line)
 {
     char mac[13] = {0};
 
-    // format: +TOPOINFO:XXXXXXXXXXXX,...
     if (sscanf(line, "+TOPOINFO:%12[^,]", mac) == 1)
     {
-    	UART_CCO_AddNewTopoMAC(mac); // menulis ke list baru
+    	UART_CCO_AddNewTopoMAC(mac);
 ;
     }
 }
@@ -236,7 +216,7 @@ void UART_CCO_ParseTopoInfo(char *line)
 
 void TOPOINFO(void)
 {
-	int attempt = 0;               // dipakai untuk retry logic
+	int attempt = 0;
     bool ok = false;
 
     while (attempt < max_retry && !ok)
@@ -249,7 +229,7 @@ void TOPOINFO(void)
         {
             attempt++;
             attempt_debug++;
-            HAL_Delay(300);   // beri waktu PLC bernapas
+            HAL_Delay(300);
         }
     }
 
@@ -264,11 +244,9 @@ void TOPOINFO(void)
 
 void UART_CCO_AddNewTopoMAC(const char *mac)
 {
-    // FILTER prefix
     if (!(mac[0] == 'F' && mac[1] == 'F' && mac[2] == 'F'&& mac[3] == 'F'))
         return;
 
-    // CEK DUPLIKAT di NEW LIST
     for (int i = 0; i < mac_sta_new_count; i++)
     {
         if (strncmp(mac_sta_new_list[i], mac, 12) == 0)
@@ -281,35 +259,19 @@ void UART_CCO_AddNewTopoMAC(const char *mac)
     strncpy(mac_sta_new_list[mac_sta_new_count], mac, 12);
     mac_sta_new_list[mac_sta_new_count][12] = '\0';
 
-//    snprintf(mac_sta_new_list[mac_sta_new_count].mac_sta,
-//             sizeof(mac_sta_new_list[mac_sta_new_count].mac_sta),
-//             "%s", mac);
-
-//    // INIT VALUE
-//    mac_sta_new_list[mac_sta_new_count].v = 0;
-//    mac_sta_new_list[mac_sta_new_count].i = 0;
-//    mac_sta_new_list[mac_sta_new_count].p = 0;
-//    mac_sta_new_list[mac_sta_new_count].relay = 0;
-//    mac_sta_new_list[mac_sta_new_count].pwm = 0;
-//    mac_sta_new_list[mac_sta_new_count].cond = false; // default
-
     mac_sta_new_count++;
 }
 
 
 void UART_CCO_SyncTopoList(void)
 {
-    // Hapus isi list lama
     mac_sta_count = 0;
 
-    // Copy semua dari new_list ke main_list
     for (int i = 0; i < mac_sta_new_count; i++)
     {
-    	// Gunakan strncpy untuk keamanan buffer
+
     	strncpy(mac_sta_list[i].mac_sta, mac_sta_new_list[i], 12);
 
-    	// **PASTIKAN NULL TERMINATOR ADA**
-    	// mac_sta[12] adalah posisi ke-13, yang merupakan null terminator
     	mac_sta_list[i].mac_sta[12] = '\0';
     }
 
@@ -389,7 +351,7 @@ void UART_CCO_SyncWHList(void)
 
 void WHINFO(void)
 {
-	int attempt = 0;               // dipakai untuk retry logic
+	int attempt = 0;
     bool ok = false;
 
     while (attempt < max_retry && !ok)
@@ -402,7 +364,7 @@ void WHINFO(void)
         {
             attempt++;
             attempt_debug++;
-            HAL_Delay(300);   // beri waktu PLC bernapas
+            HAL_Delay(300);
         }
     }
 
@@ -414,23 +376,17 @@ void WHINFO(void)
     }
 }
 
-// ============================================================================
-//                    AT+SENDEX FUNCTION
-// ============================================================================
 
 bool CCO_SendData_SENDEX(const char *mac_dest, const char *payload)
 {
     char cmd[64];
     uint16_t payload_len = strlen(payload);
 
-    // 1. Clear buffer
     UART_CCO_ClearBuffer();
 
-    // 2. Kirim AT+SENDEX command
     snprintf(cmd, sizeof(cmd), "AT+SENDEX=%s,%u", mac_dest, payload_len);
     UART_CCO_SendAT(cmd);
 
-    // 3. Tunggu prompt ">"
     if (!UART_CCO_WaitFor(">", 2000))
     {
 //        char debug[128];
@@ -439,11 +395,9 @@ bool CCO_SendData_SENDEX(const char *mac_dest, const char *payload)
         return false;
     }
 
-    // 4. Kirim payload
     UART_CCO_SendRaw(payload);
     HAL_Delay(200);
 
-    // 5. Tunggu "OK"
     if (!UART_CCO_WaitFor("OK", 2000))
     {
 //        char debug[128];
@@ -452,23 +406,12 @@ bool CCO_SendData_SENDEX(const char *mac_dest, const char *payload)
         return false;
     }
 
-    // 6. Clear rxBuffer, siap terima +RECV
-    //    Response +RECV akan di-copy ke recvBuffer oleh callback
     UART_CCO_ClearBuffer();
 
     return true;
 }
 
 
-// ============================================================================
-//                    JSON HELPER FUNCTION
-// ============================================================================
-
-/**
- * @brief Extract value dari JSON berdasarkan key
- *
- * Contoh: ExtractJsonValue(json, "V", value, 16) → value = "220.5"
- */
 bool ExtractJsonValue(const char *json, const char *key, char *value, size_t max_len)
 {
     if (json == NULL || key == NULL || value == NULL)
@@ -476,7 +419,6 @@ bool ExtractJsonValue(const char *json, const char *key, char *value, size_t max
 
     value[0] = '\0';
 
-    // Cari "KEY":
     char search[32];
     snprintf(search, sizeof(search), "\"%s\":", key);
 
@@ -484,16 +426,13 @@ bool ExtractJsonValue(const char *json, const char *key, char *value, size_t max
     if (pos == NULL)
         return false;
 
-    // Skip ke setelah ":"
     pos += strlen(search);
 
-    // Skip whitespace
     while (*pos == ' ' || *pos == '\t') pos++;
 
-    // Cek apakah value dalam quotes
     if (*pos == '"')
     {
-        pos++;  // Skip opening quote
+        pos++;
 
         size_t i = 0;
         while (*pos != '"' && *pos != '\0' && i < max_len - 1)
@@ -504,7 +443,6 @@ bool ExtractJsonValue(const char *json, const char *key, char *value, size_t max
     }
     else
     {
-        // Value tanpa quotes (number)
         size_t i = 0;
         while (*pos != ',' && *pos != '}' && *pos != '\0' && i < max_len - 1)
         {
@@ -516,46 +454,31 @@ bool ExtractJsonValue(const char *json, const char *key, char *value, size_t max
     return (strlen(value) > 0);
 }
 
-
-// ============================================================================
-//                    PARSE +RECV LINE
-// ============================================================================
-
-/**
- * @brief Parse +RECV line dari recvBuffer
- *
- * Format: +RECV:FFFFFFFFFFFF,85,"DATA":{"UID":"xxx","STA":"yyy","V":"220.5",...},1
- */
 void CCO_ParseRECV_Line(const char *line, char *mac_out, char *payload_out, size_t payload_max)
 {
     mac_out[0] = '\0';
     payload_out[0] = '\0';
 
-    // Cari +RECV:
     char *p = strstr(line, "+RECV:");
     if (p == NULL)
         return;
 
-    p += 6;  // Skip "+RECV:"
+    p += 6;
 
-    // Extract MAC (12 karakter pertama)
     strncpy(mac_out, p, 12);
     mac_out[12] = '\0';
 
-    // Cari awal payload: "DATA":
     char *payload_start = strstr(p, "\"DATA\":");
     if (payload_start == NULL)
         return;
 
-    // Cari akhir payload: }, sebelum flag
     char *payload_end = strstr(payload_start, "},");
     if (payload_end != NULL)
     {
-        payload_end++;  // Include '}'
+        payload_end++;
     }
     else
     {
-        // Cari } terakhir
         payload_end = strrchr(payload_start, '}');
         if (payload_end != NULL)
             payload_end++;
@@ -564,7 +487,6 @@ void CCO_ParseRECV_Line(const char *line, char *mac_out, char *payload_out, size
     if (payload_end == NULL)
         return;
 
-    // Copy payload
     size_t payload_len = payload_end - payload_start;
     if (payload_len > 0 && payload_len < payload_max)
     {
@@ -573,16 +495,6 @@ void CCO_ParseRECV_Line(const char *line, char *mac_out, char *payload_out, size
     }
 }
 
-
-// ============================================================================
-//                    PARSE STA RESPONSE
-// ============================================================================
-
-/**
- * @brief Parse response JSON dari STA dan update node
- *
- * Format: "DATA":{"UID":"MAC_CCO","STA":"MAC_STA","V":"220.5","I":"1.25","P":"275.6","D":"50"}
- */
 void CCO_ParseSTAResponse(const char *json)
 {
     if (json == NULL || strlen(json) < 10)
@@ -594,32 +506,24 @@ void CCO_ParseSTAResponse(const char *json)
     char p_str[16] = {0};
     char d_str[16] = {0};
 
-    // Extract STA (MAC pengirim)
     if (!ExtractJsonValue(json, "STA", sta_mac, sizeof(sta_mac)))
     {
-//        char debug[128];
-//        snprintf(debug, sizeof(debug), "[CCO_ERR] No STA in response\r\n");
-//        HAL_UART_Transmit(&huart2, (uint8_t*)debug, strlen(debug), 1000);
         return;
     }
 
-    // Extract values
     ExtractJsonValue(json, "V", v_str, sizeof(v_str));
     ExtractJsonValue(json, "I", i_str, sizeof(i_str));
     ExtractJsonValue(json, "P", p_str, sizeof(p_str));
     ExtractJsonValue(json, "D", d_str, sizeof(d_str));
 
-    // Convert
     float v_val = (v_str[0] != '\0') ? atof(v_str) : 0.0f;
     float i_val = (i_str[0] != '\0') ? atof(i_str) : 0.0f;
     float p_val = (p_str[0] != '\0') ? atof(p_str) : 0.0f;
     uint8_t d_val = (d_str[0] != '\0') ? (uint8_t)atoi(d_str) : 0;
 
-    // Cari node berdasarkan STA MAC
     uint16_t node_index;
     if (CCO_FindNodeByMAC(sta_mac, &node_index))
     {
-        // Update data node
         mac_sta_list[node_index].v = (uint16_t)(v_val * 10);
         mac_sta_list[node_index].i = (uint16_t)(i_val * 100);
         mac_sta_list[node_index].p = (uint16_t)p_val;
@@ -641,17 +545,6 @@ void CCO_ParseSTAResponse(const char *json)
     }
 }
 
-
-// ============================================================================
-//                    WAIT AND PARSE +RECV (DARI recvBuffer)
-// ============================================================================
-
-/**
- * @brief Tunggu +RECV dan parse dari recvBuffer
- *
- * Callback akan copy +RECV ke recvBuffer dan set recv_data_ready = true
- * Fungsi ini hanya perlu cek flag dan parse dari recvBuffer
- */
 bool CCO_WaitAndParse_RECV(const char *mac_expected, char *payload_out, size_t payload_size, uint32_t timeout)
 {
     uint32_t start_time = HAL_GetTick();
@@ -659,26 +552,21 @@ bool CCO_WaitAndParse_RECV(const char *mac_expected, char *payload_out, size_t p
 
     while ((HAL_GetTick() - start_time) < timeout)
     {
-        // Cek apakah ada data +RECV di recvBuffer
         if (recv_data_ready)
         {
-            // Parse dari recvBuffer (BUKAN rxBuffer!)
             char mac_from[13] = {0};
             char payload_temp[256] = {0};
 
             CCO_ParseRECV_Line(recvBuffer, mac_from, payload_temp, sizeof(payload_temp));
 
-            // Debug: tampilkan data yang diterima
 //            char debug[300];
 //            snprintf(debug, sizeof(debug),
 //                     "[CCO_RX] From %s, payload: %.100s\r\n",
 //                     mac_from, payload_temp);
 //            HAL_UART_Transmit(&huart2, (uint8_t*)debug, strlen(debug), 1000);
 
-            // Clear recvBuffer setelah diproses
             UART_CCO_ClearRecvBuffer();
 
-            // Validasi MAC (jika diperlukan)
             if (mac_expected == NULL || strncmp(mac_from, mac_expected, 12) == 0)
             {
                 strncpy(payload_out, payload_temp, payload_size - 1);
@@ -687,7 +575,6 @@ bool CCO_WaitAndParse_RECV(const char *mac_expected, char *payload_out, size_t p
             }
             else
             {
-                // MAC tidak sesuai, tapi tetap proses
 //                snprintf(debug, sizeof(debug),
 //                         "[CCO_INFO] Response from %s (expected %s)\r\n",
 //                         mac_from, mac_expected);
@@ -702,13 +589,8 @@ bool CCO_WaitAndParse_RECV(const char *mac_expected, char *payload_out, size_t p
         HAL_Delay(10);
     }
 
-    return false;  // Timeout
+    return false;
 }
-
-
-// ============================================================================
-//                    NODE FUNCTIONS
-// ============================================================================
 
 bool CCO_FindNodeByMAC(const char *mac, uint16_t *index)
 {
@@ -744,10 +626,6 @@ void CCO_UpdateNodeData(uint16_t index, uint16_t v, uint16_t i, uint16_t dim,
 }
 
 
-// ============================================================================
-//                    POLLING FUNCTIONS
-// ============================================================================
-
 void CCO_PollAllSTA_SENDEX(void)
 {
 //    char debug[128];
@@ -761,7 +639,6 @@ void CCO_PollAllSTA_SENDEX(void)
         bool success = false;
         uint8_t retry = 0;
 
-        // Clear recvBuffer sebelum polling STA ini
         UART_CCO_ClearRecvBuffer();
 
         while (retry < POLLING_MAX_RETRY && !success)
@@ -771,7 +648,6 @@ void CCO_PollAllSTA_SENDEX(void)
 //                     i, mac_sta_list[i].mac_sta, retry + 1);
 //            HAL_UART_Transmit(&huart2, (uint8_t*)debug, strlen(debug), 1000);
 
-            // Format payload RQ
             char payload[128];
             snprintf(payload, sizeof(payload),
                      "\"DATA\":{\"UID\":\"%s\",\"HEADER\":\"RQ\"}",
@@ -779,14 +655,13 @@ void CCO_PollAllSTA_SENDEX(void)
             strncpy(txBuffer, payload, sizeof(txBuffer) - 1);
             txBuffer[sizeof(txBuffer) - 1] = '\0';
 
-            // Kirim request
             if (CCO_SendData_SENDEX(mac_sta_list[i].mac_sta, payload))
             {
-                // Tunggu response dari recvBuffer
+
                 char response[256];
                 if (CCO_WaitAndParse_RECV(mac_sta_list[i].mac_sta, response, sizeof(response), POLLING_TIMEOUT_MS))
                 {
-                    // Parse response
+
                     CCO_ParseSTAResponse(response);
                     success = true;
                 }
@@ -881,14 +756,8 @@ void CCO_PollAllSTA_PWM(void)
         HAL_Delay(POLLING_DELAY_BETWEEN);
     }
 
-//    snprintf(debug, sizeof(debug), "[CCO_PWM] Completed\r\n");
-//    HAL_UART_Transmit(&huart2, (uint8_t*)debug, strlen(debug), 1000);
 }
 
-
-// ============================================================================
-//                    USART2 OUTPUT FUNCTIONS
-// ============================================================================
 
 void USART2_SendNodeAsJSON(STA_Node* node)
 {
@@ -972,14 +841,13 @@ void searching (void)
 
 	    while (attempt < max_retry && !ok)
 	    {
-	        // Perintah AT+WHSTATUS=0
 	        ok = UART_CCO_SendCmdWait("AT+WHSTATUS=0", "OK", 1000, 1000);
 
 	        if (!ok)
 	        {
 	            attempt++;
 	            attempt_debug++;
-	            HAL_Delay(300); // Beri waktu istirahat
+	            HAL_Delay(300);
 	        }
 	    }
 

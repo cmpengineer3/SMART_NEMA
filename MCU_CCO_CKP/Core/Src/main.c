@@ -29,8 +29,8 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#define SEARCH_INTERVAL_MS      (60000)     // 1 menit = 60000 ms
-#define SEARCH_DURATION_MS      (30000)     // 30 detik = 30000 ms
+#define SEARCH_INTERVAL_MS      (60000)
+#define SEARCH_DURATION_MS      (30000)
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -124,16 +124,13 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  //Pengiriman ke MCU2
       if (HAL_GetTick() - polling_timer > POLLING_INTERVAL_MS)
       {
           polling_timer = HAL_GetTick();
 
-          // 1. Update topology
           Save_Node();
           HAL_Delay(500);
-//          Send_GPIO_Toggle();
-          // 2. Polling semua STA dengan AT+SENDEX
+
           CCO_PollAllSTA_SENDEX();
           HAL_Delay(500);
 
@@ -144,7 +141,6 @@ int main(void)
 //          }
 //          polpwm++;
 
-//           3. Kirim data ke MCU2
 //          USART2_SendAllNodes_JSON();
 //          HAL_Delay(500);
 //          MCU1_ProcessMCU2Request();

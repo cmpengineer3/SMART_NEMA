@@ -30,19 +30,18 @@
 #define RELAY_Port       GPIOA
 
 // ==================== TIMING CONFIGURATION ====================
-#define HLW_TIMEOUT_MS  500     // Timeout baca 1 frame
+#define HLW_TIMEOUT_MS  500
 
 // ==================== DATA STRUCTURES ====================
 
 // Header Types
 typedef enum {
     HEADER_UNKNOWN = 0,
-    HEADER_RQ,      // Request data
-    HEADER_G,       // Global PWM
-    HEADER_S        // Specific PWM
+    HEADER_RQ,
+    HEADER_G,
+    HEADER_S
 } HeaderType_t;
 
-// Parsed Command Structure
 typedef struct {
     HeaderType_t header;
     char sta_mac[16];
@@ -50,7 +49,6 @@ typedef struct {
     bool valid;
 } ParsedCommand_t;
 
-// Struktur untuk HLW (jika digunakan)
 typedef struct{
 	float Voltage;
 	float Current;
@@ -142,18 +140,18 @@ Param* HLW_GetData(void);
 
 // ==================== GPS FUNCTIONS ====================
 void UART_GPS_Init(void);
-void GPS_ProcessData(bool auto_stop_on_fix);  // Panggil di main loop
-void GPS_Stop(void);                           // Stop GPS setelah dapat fix
-void GPS_Start(void);                          // Restart GPS jika diperlukan
-bool GPS_HasFix(void);                         // Cek apakah sudah dapat fix
-uint8_t GPS_GetFixQuality(void);               // Get fix quality (0-2)
+void GPS_ProcessData(bool auto_stop_on_fix);
+void GPS_Stop(void);
+void GPS_Start(void);
+bool GPS_HasFix(void);
+uint8_t GPS_GetFixQuality(void);
 void GPS_GetCoordinates(float *lat, float *lng);
 const char* GPS_GetTimeString(void);
 
 // ==================== NVIC PRIORITY ====================
-void UART_ConfigurePriorities(void);           // Set UART1 > UART2 priority
+void UART_ConfigurePriorities(void);
 
 // ==================== UTILITY FUNCTIONS ====================
 void blinkLED(GPIO_TypeDef* port, uint16_t pin, uint8_t times, uint16_t delayMs);
 void Set_PWM1_Duty(uint8_t percent);
-#endif /* INC_FUNCTION_H_ */
+#endif
