@@ -7,6 +7,11 @@
 !MCU_NEMA_CKP/
 !KWH_EC25_V1c/
 !New_KWH_EC25/
+!SMART_CCO_CKP/
+!SMART_CCO_Ver2/
+!SMART_KWH_Ver2/
+!SMART_NEMA_CKP/
+!SMART_PJUTS_CKP/
 
 # Izinkan isi folder tersebut
 !MCU_CCO_CKP/**
@@ -14,6 +19,11 @@
 !MCU_NEMA_CKP/**
 !KWH_EC25_V1c/**
 !New_KWH_EC25/**
+!SMART_CCO_CKP/**
+!SMART_CCO_Ver2/**
+!SMART_KWH_Ver2/**
+!SMART_NEMA_CKP/**
+!SMART_PJUTS_CKP/**
 
 # Abaikan folder Debug hasil kompilasi
 MCU_CCO_CKP/Debug/
@@ -21,6 +31,11 @@ MCU_CCO2_CKP/Debug/
 MCU_NEMA_CKP/Debug/
 KWH_EC25_V1c/Debug/
 New_KWH_EC25/Debug/
+SMART_CCO_CKP/Debug/
+SMART_CCO_Ver2/Debug/
+SMART_KWH_Ver2/Debug/
+SMART_NEMA_CKP/Debug/
+SMART_PJUTS_CKP/Debug/
 
 # Tetap izinkan .gitignore
 !.gitignore
