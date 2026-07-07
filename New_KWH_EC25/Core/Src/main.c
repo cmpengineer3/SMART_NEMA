@@ -20,7 +20,6 @@
 #include "main.h"
 #include "adc.h"
 #include "i2c.h"
-#include "iwdg.h"
 #include "rtc.h"
 #include "spi.h"
 #include "tim.h"
@@ -30,11 +29,45 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "mqtt.h"
+#include "uart.h"
+#include "config.h"
+
+#include <stdlib.h>
+#include <stdio.h>
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+static uint32_t last_read_tick    = 0;  /* timer pembacaan sensor SRNE  */
+static uint32_t last_publish_tick = 0;  /* timer publish MQTT           */
 
+static int     retry_count_local = 0;
+static int     total_retry       = 0;
+static char    last_topic[128]   = {0};
+static char    last_payload[512] = {0};
+
+/* Bangun 1 object JSON "DATA" dari nilai sensor SRNE + waktu saat ini,
+ * sesuai format payload yang diminta.                                       */
+static void Build_Sensor_Payload(char *out, size_t out_size)
+{
+    snprintf(out, out_size,
+        "{\"UID\":\"%s\",\"HEADER\":\"%s\","
+        "\"CTIME\":\"%04d%02d%02dT%02d%02d%02d\","
+        "\"VBAT\":%g,\"IBAT\":%g,\"SOCBAT\":%g,"
+        "\"DEVTEMP\":%g,\"BATTEMP\":%g,"
+        "\"VLOAD\":%g,\"ILOAD\":%g,\"PLOAD\":%g,"
+        "\"VPV\":%g,\"IPV\":%g,\"PPV\":%g,"
+        "\"CHRSTATE\":%u}",
+        uid, header_x,
+        year, month, day, hour, minute, second,
+        (double)batteryVoltage, (double)batteryCurrent, (double)batterySOC,
+        (double)deviceTemperature, (double)batteryTemperature,
+        (double)loadVoltage, (double)loadCurrent, (double)loadPower,
+        (double)pvVolt, (double)pvCurrent, (double)pvPower,
+        (unsigned)chargeState);
+}
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -56,7 +89,11 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+//static void MX_GPIO_Init(void);
+//static void MX_UART4_Init(void);
+//static void MX_USART2_UART_Init(void);
+//static void MX_USART3_UART_Init(void);
+//static void MX_USART6_UART_Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -72,7 +109,9 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+	  uint32_t millis(void) {
+		return HAL_GetTick();
+	  }
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -96,14 +135,104 @@ int main(void)
   MX_UART4_Init();
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
-  MX_IWDG_Init();
   MX_RTC_Init();
   MX_ADC1_Init();
   MX_TIM2_Init();
   MX_I2C1_Init();
   MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
+  UART_Init_Buffer(&huart3);  /* modem terhubung ke USART2 di board ini */
+  HAL_GPIO_WritePin(LTE_RST_GPIO_Port, LTE_RST_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(EN3V8_GPIO_Port, EN3V8_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LTE_PWR_GPIO_Port, LTE_PWR_Pin, GPIO_PIN_SET);
+  HAL_Delay(6000);
 
+  for (int i = 0; i < 3; i++)
+  {
+      UART_SendATCommand("ATE0");
+      if (UART_WaitForOK(2000)) break;
+      HAL_Delay(500);
+  }
+
+  /* ── Build MQTT credentials dari config.c ───────────────────────────────── */
+  MQTT_Config mqtt_cfg = Config_GetMQTT();
+  MQTT_Init(&mqtt_cfg);
+
+  /* ── MQTT connection sequence ────────────────────────────────────────────── */
+  MQTT_START:
+  retry_count_local = 0;
+  total_retry        = 0;
+
+  UART_SendATCommand("AT+QMTCFG=\"session\",0,1");
+  UART_WaitForOK(3000);
+  UART_SendATCommand("AT+QMTCFG=\"keepalive\",0,3600");
+  UART_WaitForOK(3000);
+
+  UART_SendATCommand("AT+QMTDISC=0");
+  HAL_Delay(500);
+  UART_SendATCommand("AT+QMTCLOSE=0");
+  HAL_Delay(2000);
+
+  while (MQTT_Open() != MQTT_OK)
+  {
+	  MQTT_CheckNetwork();
+	  UART_SendATCommand("AT+QMTCLOSE=0");
+	  HAL_Delay(3000);
+	  retry_count_local++;
+	  total_retry++;
+
+	  if (total_retry >= 10)
+	  {
+		  HAL_GPIO_WritePin(EN3V8_GPIO_Port, EN3V8_Pin, GPIO_PIN_RESET);
+		  HAL_Delay(3000);
+		  NVIC_SystemReset();
+		  while (1) {}
+	  }
+	  if (retry_count_local >= 5)
+	  {
+		  retry_count_local = 0;
+		  goto MQTT_START;
+	  }
+  }
+
+  while (MQTT_Connect() != MQTT_OK)
+  {
+	  UART_SendATCommand("AT+QMTDISC=0");
+	  retry_count_local++;
+	  HAL_Delay(500);
+	  if (retry_count_local >= 3)
+	  {
+		  retry_count_local = 0;
+		  goto MQTT_START;
+	  }
+	  total_retry++;
+	  if (total_retry > 10)
+	  {
+		  NVIC_SystemReset();
+		  while (1) {}
+	  }
+  }
+
+  retry_count_local = 0;
+  while (MQTT_Subscribe(mqtt_topic_sub, 1) != MQTT_OK)
+  {
+	  HAL_Delay(500);
+	  retry_count_local++;
+	  if (retry_count_local >= 5) goto MQTT_START;
+  }
+
+  MQTT_Publish(mqtt_topic_pub, "{\"MSG\":\"Terhubung SRNE-MQTT\"}", 1, 0);
+  HAL_Delay(50);
+
+  /* Baca sensor pertama kali (setelah modem siap → mqtt_read_time bisa jalan) */
+//  Read_All_Sensor();
+  HAL_Delay(100);
+  char data_obj[512];
+  Build_Sensor_Payload(data_obj, sizeof(data_obj));
+  MQTT_PublishWithCRC(mqtt_topic_pub, data_obj, 1, 0);
+
+  last_read_tick    = HAL_GetTick();
+  last_publish_tick = HAL_GetTick();
   /* USER CODE END 2 */
 
   /* Infinite loop */

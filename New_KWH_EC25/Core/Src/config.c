@@ -9,7 +9,7 @@
 //char broker_host[64] = "mqtt.caturmukti.com";
 //int  broker_port     = 1883;
 //
-//char client_id[64]   = "PJU_TS";
+//char client_id[64]   = "SMART_KWH";
 //char username[64]    = "admin";
 //char password[64]    = "xK645P7Np6LR";
 //==============================================================================================================
