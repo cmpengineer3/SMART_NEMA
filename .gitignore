@@ -6,18 +6,21 @@
 !MCU_CCO2_CKP/
 !MCU_NEMA_CKP/
 !KWH_EC25_V1c/
+!New_KWH_EC25/
 
 # Izinkan isi folder tersebut
 !MCU_CCO_CKP/**
 !MCU_CCO2_CKP/**
 !MCU_NEMA_CKP/**
 !KWH_EC25_V1c/**
+!New_KWH_EC25/**
 
 # Abaikan folder Debug hasil kompilasi
 MCU_CCO_CKP/Debug/
 MCU_CCO2_CKP/Debug/
 MCU_NEMA_CKP/Debug/
 KWH_EC25_V1c/Debug/
+New_KWH_EC25/Debug/
 
 # Tetap izinkan .gitignore
 !.gitignore
