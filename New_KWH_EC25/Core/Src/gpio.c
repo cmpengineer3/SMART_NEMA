@@ -54,7 +54,8 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOA, RELAY_Pin|LED_Pin|EN10_Pin|EN3V8_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LTE_PWR_Pin|LTE_RST_Pin|ADE7880_CS_Pin|MEM_WP_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LTE_PWR_Pin|LTE_RST_Pin|ADE7880_CS_Pin|SPI2_SCK_Pin
+                          |SPI2_MOSI_Pin|MEM_WP_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, ADE_PM1_Pin|ADE_PM0_Pin|ADE_RST_Pin, GPIO_PIN_RESET);
@@ -79,12 +80,18 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ADE7880_CS_Pin MEM_WP_Pin */
-  GPIO_InitStruct.Pin = ADE7880_CS_Pin|MEM_WP_Pin;
+  /*Configure GPIO pins : ADE7880_CS_Pin SPI2_SCK_Pin SPI2_MOSI_Pin MEM_WP_Pin */
+  GPIO_InitStruct.Pin = ADE7880_CS_Pin|SPI2_SCK_Pin|SPI2_MOSI_Pin|MEM_WP_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : SPI2_MISO_Pin */
+  GPIO_InitStruct.Pin = SPI2_MISO_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(SPI2_MISO_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : ADE_PM1_Pin ADE_PM0_Pin ADE_RST_Pin */
   GPIO_InitStruct.Pin = ADE_PM1_Pin|ADE_PM0_Pin|ADE_RST_Pin;

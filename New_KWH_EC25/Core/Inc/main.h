@@ -79,6 +79,12 @@ void Error_Handler(void);
 #define GSM_RX_GPIO_Port GPIOB
 #define ADE7880_CS_Pin GPIO_PIN_12
 #define ADE7880_CS_GPIO_Port GPIOB
+#define SPI2_SCK_Pin GPIO_PIN_13
+#define SPI2_SCK_GPIO_Port GPIOB
+#define SPI2_MISO_Pin GPIO_PIN_14
+#define SPI2_MISO_GPIO_Port GPIOB
+#define SPI2_MOSI_Pin GPIO_PIN_15
+#define SPI2_MOSI_GPIO_Port GPIOB
 #define ADE_PM1_Pin GPIO_PIN_6
 #define ADE_PM1_GPIO_Port GPIOC
 #define ADE_PM0_Pin GPIO_PIN_7

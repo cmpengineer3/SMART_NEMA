@@ -1,8 +1,7 @@
 /*
  * config.h
  *
- *  Created on: Sep 1, 2025
- *      Author: firza
+ *  Konfigurasi broker MQTT, topic, dan parameter device untuk Smart-KWH.
  */
 
 #ifndef INC_CONFIG_H_
@@ -14,7 +13,12 @@
 #include <stdbool.h>
 #include "mqtt.h"
 
-#define uid "UID123456789"		//UID DEVICE=====================================
+/* ── Identitas device ─────────────────────────────────────────────────────── */
+#define uid "KWH01310000022"
+#define LATITUDE   -7.276598
+#define LONGITUDE  112.795616
+
+/* ── Broker / kredensial (definisi di config.c) ──────────────────────────── */
 extern char broker_host[64];
 extern int  broker_port;
 extern char client_id[64];
@@ -27,39 +31,24 @@ extern char mqtt_topic_sub[128];
 extern char mac_cco[24];
 
 /* ── Timing ───────────────────────────────────────────────────────────────── */
-extern uint32_t read_interval;   /* interval baca sensor SRNE (ms) */
-extern uint32_t send_interval;   /* interval publish MQTT (ms)     */
+extern uint32_t read_interval;   /* interval baca ADE7880 (ms)   */
+extern uint32_t send_interval;   /* interval publish MQTT (ms)   */
 
-extern int resend_count;         /* counter publish yang gagal     */
+extern int resend_count;         /* counter publish yang gagal   */
 
-extern float batteryVoltage;
-extern float batteryCurrent;
-extern float batterySOC;
-extern float deviceTemperature;
-extern float batteryTemperature;
-extern float loadVoltage;
-extern float loadCurrent;
-extern float loadPower;
-extern float pvVolt;
-extern float pvCurrent;
-extern float pvPower;
-
-// Tambahan untuk charge state
-extern uint8_t chargeState;
-extern int loadState;
-extern int loadIntensity;
-
+/* ── Header payload (opsional) ────────────────────────────────────────────── */
 extern char header_x[64];
 extern char header_y[64];
+
+/* ── Waktu (di-update oleh mqtt_read_time via AT+QLTS=2) ──────────────────── */
 extern int year;
 extern int month;
 extern int day;
 extern int hour;
 extern int minute;
 extern int second;
-/* mqtt_msg_id removed — managed internally by mqtt.c (auto-increment) */
 
-/* Helper: build MQTT_Config struct from config variables above */
+/* Helper: bangun struct MQTT_Config dari variabel di atas */
 MQTT_Config Config_GetMQTT(void);
 
 #endif

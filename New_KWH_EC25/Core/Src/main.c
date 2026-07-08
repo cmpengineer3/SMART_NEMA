@@ -21,7 +21,6 @@
 #include "adc.h"
 #include "i2c.h"
 #include "rtc.h"
-#include "spi.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -33,41 +32,77 @@
 #include "uart.h"
 #include "config.h"
 
+#include "powermeter_ade7880.h"   /* driver ADE7880 (bit-bang)          */
+#include "KWH.h"                  /* getElectricValue, WH, updatePwmVal */
+#include "fram.h"                 /* simpan/baca WH persisten           */
+
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-static uint32_t last_read_tick    = 0;  /* timer pembacaan sensor SRNE  */
-static uint32_t last_publish_tick = 0;  /* timer publish MQTT           */
+static uint32_t last_read_tick    = 0;   /* timer baca ADE7880   */
+static uint32_t last_publish_tick = 0;   /* timer publish MQTT   */
 
-static int     retry_count_local = 0;
-static int     total_retry       = 0;
-static char    last_topic[128]   = {0};
-static char    last_payload[512] = {0};
+static int  retry_count_local = 0;
+static int  total_retry       = 0;
+static char last_topic[128]   = {0};
+static char last_payload[512] = {0};
 
-/* Bangun 1 object JSON "DATA" dari nilai sensor SRNE + waktu saat ini,
- * sesuai format payload yang diminta.                                       */
-static void Build_Sensor_Payload(char *out, size_t out_size)
+/* Buffer & struct sensor global (dipakai di loop) */
+static pwr_value_t pwr_val;
+static pwr_value_t last_pwr_val;
+static WH_T        tWH;
+static float       WH = 0.0f;
+static uint16_t    ADEStuck_count = 0;
+
+/* ──────────────────────────────────────────────────────────────────────────
+ *  Build payload JSON data KWH (TANPA enkripsi).
+ *  Format DATA object: 9 parameter listrik + PF + FREQ + WH + metadata waktu.
+ *  Dipublish via MQTT_PublishWithCRC → {"CRC":"XXXX","DATA":{...}}
+ * ────────────────────────────────────────────────────────────────────────── */
+static void Build_KWH_Payload(char *out, size_t out_size, pwr_value_t *pv, float wh)
 {
     snprintf(out, out_size,
-        "{\"UID\":\"%s\",\"HEADER\":\"%s\","
+        "{\"UID\":\"%s\","
         "\"CTIME\":\"%04d%02d%02dT%02d%02d%02d\","
-        "\"VBAT\":%g,\"IBAT\":%g,\"SOCBAT\":%g,"
-        "\"DEVTEMP\":%g,\"BATTEMP\":%g,"
-        "\"VLOAD\":%g,\"ILOAD\":%g,\"PLOAD\":%g,"
-        "\"VPV\":%g,\"IPV\":%g,\"PPV\":%g,"
-        "\"CHRSTATE\":%u}",
-        uid, header_x,
+        "\"VR\":%.2f,\"VS\":%.2f,\"VT\":%.2f,"
+        "\"IR\":%.2f,\"IS\":%.2f,\"IT\":%.2f,"
+        "\"PWR\":%.2f,\"PWS\":%.2f,\"PWT\":%.2f,"
+        "\"PFR\":%.2f,\"PFS\":%.2f,\"PFT\":%.2f,"
+        "\"FREQ\":%.2f,\"WH\":%.2f}",
+        uid,
         year, month, day, hour, minute, second,
-        (double)batteryVoltage, (double)batteryCurrent, (double)batterySOC,
-        (double)deviceTemperature, (double)batteryTemperature,
-        (double)loadVoltage, (double)loadCurrent, (double)loadPower,
-        (double)pvVolt, (double)pvCurrent, (double)pvPower,
-        (unsigned)chargeState);
+        (double)pv->VRms_R, (double)pv->VRms_S, (double)pv->VRms_T,
+        (double)pv->IRms_R, (double)pv->IRms_S, (double)pv->IRms_T,
+        (double)pv->Pow_R,  (double)pv->Pow_S,  (double)pv->Pow_T,
+        (double)pv->Pf_R,   (double)pv->Pf_S,   (double)pv->Pf_T,
+        (double)pv->Freq_T, (double)wh);
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ *  Cetak nilai sensor ke UART debug (huart1) — untuk verifikasi pembacaan.
+ * ────────────────────────────────────────────────────────────────────────── */
+static void Debug_Print_Sensor(pwr_value_t *pv, float wh)
+{
+    char buff[120];
+    int n;
+    n = sprintf(buff, "VR=%3.2f IR=%2.2f PFR=%2.2f PR=%2.2f\r\n",
+                pv->VRms_R, pv->IRms_R, pv->Pf_R, pv->Pow_R);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buff, n, 1000);
+    n = sprintf(buff, "VS=%3.2f IS=%2.2f PFS=%2.2f PS=%2.2f\r\n",
+                pv->VRms_S, pv->IRms_S, pv->Pf_S, pv->Pow_S);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buff, n, 1000);
+    n = sprintf(buff, "VT=%3.2f IT=%2.2f PFT=%2.2f PT=%2.2f\r\n",
+                pv->VRms_T, pv->IRms_T, pv->Pf_T, pv->Pow_T);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buff, n, 1000);
+    n = sprintf(buff, "WH=%3.5f\r\n", wh);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buff, n, 1000);
+}
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -139,100 +174,97 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM2_Init();
   MX_I2C1_Init();
-  MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
-  UART_Init_Buffer(&huart3);  /* modem terhubung ke USART2 di board ini */
-  HAL_GPIO_WritePin(LTE_RST_GPIO_Port, LTE_RST_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(EN3V8_GPIO_Port, EN3V8_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(LTE_PWR_GPIO_Port, LTE_PWR_Pin, GPIO_PIN_SET);
-  HAL_Delay(6000);
+  /* ── UART modem (huart3) ────────────────────────────────────────────────── */
+   UART_Init_Buffer(&huart3);
 
-  for (int i = 0; i < 3; i++)
-  {
-      UART_SendATCommand("ATE0");
-      if (UART_WaitForOK(2000)) break;
-      HAL_Delay(500);
-  }
+   /* ── Power-on modem EC25 (sekuens dari project baru yang sudah jalan) ────── */
+   HAL_GPIO_WritePin(LTE_RST_GPIO_Port, LTE_RST_Pin, GPIO_PIN_SET);
+   HAL_GPIO_WritePin(EN3V8_GPIO_Port,   EN3V8_Pin,   GPIO_PIN_SET);
+   HAL_GPIO_WritePin(LTE_PWR_GPIO_Port, LTE_PWR_Pin, GPIO_PIN_SET);
+   HAL_Delay(6000);
 
-  /* ── Build MQTT credentials dari config.c ───────────────────────────────── */
-  MQTT_Config mqtt_cfg = Config_GetMQTT();
-  MQTT_Init(&mqtt_cfg);
+   for (int i = 0; i < 3; i++)
+   {
+       UART_SendATCommand("ATE0");
+       if (UART_WaitForOK(2000)) break;
+       HAL_Delay(500);
+   }
 
-  /* ── MQTT connection sequence ────────────────────────────────────────────── */
-  MQTT_START:
-  retry_count_local = 0;
-  total_retry        = 0;
+   /* ── Inisialisasi ADE7880 (bit-bang) ────────────────────────────────────── */
+   ADE7880_Config();
 
-  UART_SendATCommand("AT+QMTCFG=\"session\",0,1");
-  UART_WaitForOK(3000);
-  UART_SendATCommand("AT+QMTCFG=\"keepalive\",0,3600");
-  UART_WaitForOK(3000);
+   /* ── Ambil WH terakhir dari FRAM (persisten) ────────────────────────────── */
+   WH = FRAM_Read_WH();
+   if (WH < 0 || WH > 1.0e9f) WH = 0;   /* guard nilai sampah pertama kali */
+   tWH.WH_R = WH / 3;
+   tWH.WH_S = WH / 3;
+   tWH.WH_T = WH / 3;
+   setWH(&tWH);
 
-  UART_SendATCommand("AT+QMTDISC=0");
-  HAL_Delay(500);
-  UART_SendATCommand("AT+QMTCLOSE=0");
-  HAL_Delay(2000);
+   /* ── Bangun kredensial MQTT dari config.c ───────────────────────────────── */
+   MQTT_Config mqtt_cfg = Config_GetMQTT();
+   MQTT_Init(&mqtt_cfg);
 
-  while (MQTT_Open() != MQTT_OK)
-  {
-	  MQTT_CheckNetwork();
-	  UART_SendATCommand("AT+QMTCLOSE=0");
-	  HAL_Delay(3000);
-	  retry_count_local++;
-	  total_retry++;
+   /* ── Sekuens koneksi MQTT (dari project baru yang sudah terbukti jalan) ──── */
+   MQTT_START:
+   retry_count_local = 0;
+   total_retry        = 0;
 
-	  if (total_retry >= 10)
-	  {
-		  HAL_GPIO_WritePin(EN3V8_GPIO_Port, EN3V8_Pin, GPIO_PIN_RESET);
-		  HAL_Delay(3000);
-		  NVIC_SystemReset();
-		  while (1) {}
-	  }
-	  if (retry_count_local >= 5)
-	  {
-		  retry_count_local = 0;
-		  goto MQTT_START;
-	  }
-  }
+   UART_SendATCommand("AT+QMTCFG=\"session\",0,1");
+   UART_WaitForOK(3000);
+   UART_SendATCommand("AT+QMTCFG=\"keepalive\",0,3600");
+   UART_WaitForOK(3000);
 
-  while (MQTT_Connect() != MQTT_OK)
-  {
-	  UART_SendATCommand("AT+QMTDISC=0");
-	  retry_count_local++;
-	  HAL_Delay(500);
-	  if (retry_count_local >= 3)
-	  {
-		  retry_count_local = 0;
-		  goto MQTT_START;
-	  }
-	  total_retry++;
-	  if (total_retry > 10)
-	  {
-		  NVIC_SystemReset();
-		  while (1) {}
-	  }
-  }
+   UART_SendATCommand("AT+QMTDISC=0");
+   HAL_Delay(500);
+   UART_SendATCommand("AT+QMTCLOSE=0");
+   HAL_Delay(2000);
 
-  retry_count_local = 0;
-  while (MQTT_Subscribe(mqtt_topic_sub, 1) != MQTT_OK)
-  {
-	  HAL_Delay(500);
-	  retry_count_local++;
-	  if (retry_count_local >= 5) goto MQTT_START;
-  }
+   while (MQTT_Open() != MQTT_OK)
+   {
+       MQTT_CheckNetwork();
+       UART_SendATCommand("AT+QMTCLOSE=0");
+       HAL_Delay(3000);
+       retry_count_local++;
+       total_retry++;
 
-  MQTT_Publish(mqtt_topic_pub, "{\"MSG\":\"Terhubung SRNE-MQTT\"}", 1, 0);
-  HAL_Delay(50);
+       if (total_retry >= 10)
+       {
+           HAL_GPIO_WritePin(EN3V8_GPIO_Port, EN3V8_Pin, GPIO_PIN_RESET);
+           HAL_Delay(3000);
+           NVIC_SystemReset();
+           while (1) {}
+       }
+       if (retry_count_local >= 5) { retry_count_local = 0; goto MQTT_START; }
+   }
 
-  /* Baca sensor pertama kali (setelah modem siap → mqtt_read_time bisa jalan) */
-//  Read_All_Sensor();
-  HAL_Delay(100);
-  char data_obj[512];
-  Build_Sensor_Payload(data_obj, sizeof(data_obj));
-  MQTT_PublishWithCRC(mqtt_topic_pub, data_obj, 1, 0);
+   while (MQTT_Connect() != MQTT_OK)
+   {
+       UART_SendATCommand("AT+QMTDISC=0");
+       retry_count_local++;
+       HAL_Delay(500);
+       if (retry_count_local >= 3) { retry_count_local = 0; goto MQTT_START; }
+       total_retry++;
+       if (total_retry > 10) { NVIC_SystemReset(); while (1) {} }
+   }
 
-  last_read_tick    = HAL_GetTick();
-  last_publish_tick = HAL_GetTick();
+   retry_count_local = 0;
+   while (MQTT_Subscribe(mqtt_topic_sub, 1) != MQTT_OK)
+   {
+       HAL_Delay(500);
+       retry_count_local++;
+       if (retry_count_local >= 5) goto MQTT_START;
+   }
+
+   MQTT_Publish(mqtt_topic_pub, "{\"MSG\":\"Terhubung SMART-KWH MQTT\"}", 1, 0);
+   HAL_Delay(50);
+
+   /* ── Ambil waktu dari jaringan (via AT+QLTS=2) → isi year/month/day dst ──── */
+   mqtt_read_time();
+
+   last_read_tick    = HAL_GetTick();
+   last_publish_tick = HAL_GetTick();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -242,6 +274,95 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	    /* ── (1) Baca ADE7880 tiap read_interval ────────────────────────────── */
+	  if ((HAL_GetTick() - last_read_tick) >= read_interval)
+	      {
+	          HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+
+	          getElectricValue(&pwr_val);
+	          WH = pwr_val.WH_R + pwr_val.WH_S + pwr_val.WH_T;
+
+	          /* Deteksi ADE stuck: kalau VRms tidak berubah 10x → re-init */
+	          if (pwr_val.VRms_R == last_pwr_val.VRms_R &&
+	              pwr_val.VRms_S == last_pwr_val.VRms_S &&
+	              pwr_val.VRms_T == last_pwr_val.VRms_T)
+	              ADEStuck_count++;
+	          else
+	              ADEStuck_count = 0;
+
+	          if (ADEStuck_count > 10)
+	          {
+	              ADE7880_Config();
+	              ADEStuck_count = 0;
+	          }
+
+	          /* Simpan WH ke FRAM (persisten) */
+	          WattH.m_float = WH;
+	          WritemByte_FRAM(addr_energy, WattH.m_bytes);
+
+	          /* Debug print ke huart1 */
+	          Debug_Print_Sensor(&pwr_val, WH);
+
+	          last_pwr_val.VRms_R = pwr_val.VRms_R;
+	          last_pwr_val.VRms_S = pwr_val.VRms_S;
+	          last_pwr_val.VRms_T = pwr_val.VRms_T;
+
+	          HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+	          last_read_tick = HAL_GetTick();
+	      }
+
+	      /* ── (2) Publish data ke server tiap send_interval ──────────────────── */
+	      if ((HAL_GetTick() - last_publish_tick) >= send_interval)
+	      {
+	          /* refresh waktu sebelum kirim */
+	          mqtt_read_time();
+
+	          /* susun payload JSON (tanpa enkripsi) & publish dengan CRC */
+	          char data_obj[512];
+	          Build_KWH_Payload(data_obj, sizeof(data_obj), &pwr_val, WH);
+
+	          if (MQTT_PublishWithCRC(mqtt_topic_pub, data_obj, 1, 0) != MQTT_OK)
+	          {
+	              resend_count++;
+	              /* kalau modem terputus, reconnect lalu subscribe ulang */
+	              if (mqtt_disconnected || resend_count >= 3)
+	              {
+	                  resend_count = 0;
+	                  if (MQTT_Reconnect() == MQTT_OK)
+	                      MQTT_Subscribe(mqtt_topic_sub, 1);
+	              }
+	          }
+	          else
+	          {
+	              resend_count = 0;
+	          }
+
+	          last_publish_tick = HAL_GetTick();
+	      }
+
+	      /* ── (3) Handle downlink: hanya request DATA:{"H":"R"} (seperti PJUTS) ── */
+	      if (mqtt_data_ready)
+	      {
+	          if (MQTT_ProcessIncoming(last_topic,   sizeof(last_topic),
+	                                   last_payload, sizeof(last_payload)))
+	          {
+	              /* verifikasi CRC dulu (format {"CRC":..,"DATA":..}) */
+	              if (MQTT_VerifyPayloadCRC(last_payload))
+	              {
+	                  char data_obj_in[512];
+	                  if (MQTT_ExtractDataObject(last_payload, data_obj_in, sizeof(data_obj_in)))
+	                  {
+	                      /* Request data → device kirim parameter ADE + KWH sekarang */
+	                      if (strstr(data_obj_in, "\"H\":\"R\"") != NULL)
+	                      {
+	                          char data_obj_out[512];
+	                          Build_KWH_Payload(data_obj_out, sizeof(data_obj_out), &pwr_val, WH);
+	                          MQTT_PublishWithCRC(mqtt_topic_pub, data_obj_out, 1, 0);
+	                      }
+	                  }
+	              }
+	          }
+	      }
   }
   /* USER CODE END 3 */
 }
