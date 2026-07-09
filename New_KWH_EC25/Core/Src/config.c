@@ -11,6 +11,7 @@
  */
 
 #include "config.h"
+#include <stdio.h>
 
 /* ── Konfigurasi MQTT Broker (contoh: broker publik untuk tes) ────────────── */
 //char broker_host[64] = "broker.hivemq.com";
@@ -31,8 +32,16 @@
 
 /* ── Topic MQTT ───────────────────────────────────────────────────────────── */
 char mqtt_regis_pub[128] = "SIKLON/SMARTPJU/CCO/REGISTER";
-char mqtt_topic_pub[128] = "SIKLON/SMARTPJU/JKT/KWH0426DEMO0/UPLINK/CCO";
-char mqtt_topic_sub[128] = "SIKLON/SMARTPJU/JKT/KWH0426DEMO0/DOWNLINK";
+char mqtt_topic_pub[128];
+char mqtt_topic_sub[128];
+
+
+//sprintf(mqtt_topic_pub, "SIKLON/SMARTPJU/JKT/&s/UPLINK/CCO", UID);
+//sprintf(mqtt_topic_sub, "SIKLON/SMARTPJU/JKT/&s/DOWNLINK", UID);
+
+
+//char mqtt_topic_pub[128] = "SIKLON/SMARTPJU/JKT/KWH0426DEMO0/UPLINK/CCO";
+//char mqtt_topic_sub[128] = "SIKLON/SMARTPJU/JKT/KWH0426DEMO0/DOWNLINK";
 
 char mac_cco[24];
 

@@ -31,9 +31,12 @@ typedef struct pwr_value_t{
 	float IRms_R;
 	float IRms_S;
 	float IRms_T;
-	float Pow_R;
-	float Pow_S;
-	float Pow_T;
+	float Pow_R;      /* Daya AKTIF / Watt  fasa R (dari ADE7880_getDataPOW) */
+	float Pow_S;      /* Daya AKTIF / Watt  fasa S                            */
+	float Pow_T;      /* Daya AKTIF / Watt  fasa T                            */
+	float VA_R;       /* Daya SEMU  / VA    fasa R (= VRms x IRms, manual)    */
+	float VA_S;       /* Daya SEMU  / VA    fasa S                            */
+	float VA_T;       /* Daya SEMU  / VA    fasa T                            */
 	float Pf_R;
 	float Pf_S;
 	float Pf_T;

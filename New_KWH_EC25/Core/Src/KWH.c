@@ -7,6 +7,7 @@
 #include <KWH.h>
 #include "main.h"
 #include "usart.h"
+#include <stdio.h>
 /* #include "gsm.h"  -- dihapus: KWH.c tidak memakai fungsi GSM */
 #include "rtc.h"
 #include "powermeter_ade7880.h"
@@ -22,10 +23,12 @@ extern float GAIN_VRMSR, GAIN_VRMSS, GAIN_VRMST,
 float P_R,P_S,P_T,VA_R,VA_S,VA_T,VARR,VARS,VART;
 float Wh_R=0, Wh_S=0, Wh_T=0;
 
+/* Akumulasi energi WH dari daya SEMU (VA = V x I), sesuai permintaan.
+ * Kalau nanti mau dari daya aktif, ganti VA_R/S/T di sini dengan P_R/S/T. */
 void updateWh(){
-	Wh_R+=P_R/3600.0;
-	Wh_S+=P_S/3600.0;
-	Wh_T+=P_T/3600.0;
+	Wh_R+=VA_R/3600.0;
+	Wh_S+=VA_S/3600.0;
+	Wh_T+=VA_T/3600.0;
 }
 
 void getWH(WH_T* pval){
@@ -83,8 +86,9 @@ uint32_t getElectricValue(pwr_value_t* pPwrVal)
 
 //	HAL_Delay(10);
 	ADE7880_getDataPFf(&pF_R,&pF_S,&pF_T,&f_R,&f_S,&f_T);
-//	HAL_Delay(10);
-//	ADE7880_getDataPOW(&P_R, &P_S, &P_T);
+
+	/* Daya AKTIF (Watt) murni dari ADE7880 */
+	ADE7880_getDataPOW(&P_R, &P_S, &P_T);
 
 	if(pF_R<0.10){
 		pF_R=0;
@@ -99,9 +103,10 @@ uint32_t getElectricValue(pwr_value_t* pPwrVal)
 		Irms_T_cal = 0;
 	}
 
-	P_R = Vrms_R_cal * Irms_R_cal;// * pF_R;
-	P_S = Vrms_S_cal * Irms_S_cal;// * pF_S;
-	P_T = Vrms_T_cal * Irms_T_cal;// * pF_T;
+	/* Daya SEMU (VA) = V x I per fasa (hitung manual) */
+	VA_R = Vrms_R_cal * Irms_R_cal;
+	VA_S = Vrms_S_cal * Irms_S_cal;
+	VA_T = Vrms_T_cal * Irms_T_cal;
 
 	pPwrVal->VRms_R = Vrms_R_cal;
 	pPwrVal->VRms_S = Vrms_S_cal;
@@ -109,18 +114,18 @@ uint32_t getElectricValue(pwr_value_t* pPwrVal)
 	pPwrVal->IRms_R = Irms_R_cal;
 	pPwrVal->IRms_S = Irms_S_cal;
 	pPwrVal->IRms_T = Irms_T_cal;
-	pPwrVal->Pf_R = Vrms_R_cal;
-	pPwrVal->Pf_S = Vrms_S_cal;
-	pPwrVal->Pf_T = Vrms_T_cal;
 	pPwrVal->Pf_R = pF_R;
 	pPwrVal->Pf_S = pF_S;
 	pPwrVal->Pf_T = pF_T;
 	pPwrVal->Freq_R = f_R;
 	pPwrVal->Freq_S = f_S;
 	pPwrVal->Freq_T = f_T;
-	pPwrVal->Pow_R = P_R;
+	pPwrVal->Pow_R = P_R;      /* daya AKTIF (Watt) dari ADE       */
 	pPwrVal->Pow_S = P_S;
 	pPwrVal->Pow_T = P_T;
+	pPwrVal->VA_R  = VA_R;     /* daya SEMU (VA) = V x I           */
+	pPwrVal->VA_S  = VA_S;
+	pPwrVal->VA_T  = VA_T;
 	pPwrVal->WH_R = Wh_R;
 	pPwrVal->WH_S = Wh_S;
 	pPwrVal->WH_T = Wh_T;
@@ -208,11 +213,11 @@ uint8_t updatePwmVal(RTC_TimeTypeDef* cTime,daily_schedule_t* pSch,int max)
 //	PWMV = HAL_GPIO_ReadPin(GPIOA,GPIO_PIN_1);
 
 	n= sprintf(buff,"CTime = %2d : %2d\r\n",cTime->Hours,cTime->Minutes);
-	HAL_UART_Transmit(&huart1,buff,n,1000);
+	HAL_UART_Transmit(&huart1,(uint8_t*)buff,n,1000);
 	n= sprintf(buff,"CSchedule = %2d : %2d\r\n",cSch.hour,cSch.min);
-	HAL_UART_Transmit(&huart1,buff,n,1000);
+	HAL_UART_Transmit(&huart1,(uint8_t*)buff,n,1000);
 	n= sprintf(buff,"Relay Status = %d\r\n",PWMV);
-	HAL_UART_Transmit(&huart1,buff,n,1000);
+	HAL_UART_Transmit(&huart1,(uint8_t*)buff,n,1000);
 
 	return PWMV;
 }

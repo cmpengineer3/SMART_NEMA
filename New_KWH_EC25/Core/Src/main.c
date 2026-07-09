@@ -63,6 +63,11 @@ static uint16_t    ADEStuck_count = 0;
 /* Status relay (DO1). 0 = OFF, 1 = ON. Dikendalikan via downlink H:S. */
 static uint8_t relay_state = 0;
 
+static ModemStatus mstat;
+
+/* Versi firmware (untuk field "Ver" di payload) */
+#define FW_VERSION "2026.07.01"
+
 /* ──────────────────────────────────────────────────────────────────────────
  *  Kontrol relay DO1 (pin PA1 = RELAY_Pin).
  *
@@ -125,6 +130,94 @@ static void Build_KWH_Payload(char *out, size_t out_size, pwr_value_t *pv, float
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
+ *  Nama hari (Bahasa Indonesia) dari tanggal — algoritma Sakamoto.
+ *  return 0=Minggu, 1=Senin, ... 6=Sabtu.
+ * ────────────────────────────────────────────────────────────────────────── */
+static const char *Nama_Hari(int y, int m, int d)
+{
+    static const char *hari[] = {
+        "Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"
+    };
+    static const int t[] = {0,3,2,5,0,3,5,1,4,6,2,4};
+    if (m < 3) y -= 1;
+    if (m < 1 || m > 12) return "-";
+    int idx = (y + y/4 - y/100 + y/400 + t[m-1] + d) % 7;
+    return hari[idx];
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ *  Susun payload LENGKAP (format server baru) lalu publish.
+ *
+ *  Bentuk:
+ *  {"CRC":"0xXXXX","DATA":{...},"LU":{...},"Ver":..,"COM":..,"IMSI":..,"IMEI":..}
+ *
+ *  - CRC (Modbus CRC-16) dihitung dari string DATA object saja, format "0xXXXX".
+ *  - VA per fasa = V x I (hitung manual).
+ *  - PV per fasa = daya aktif dari ADE7880_getDataPOW() (murni dari ADE).
+ *  - W           = total daya aktif (PV_R + PV_S + PV_T).
+ *  - Sig (dBm)   = -113 + 2*CSQ  (konversi standar dari +CSQ).
+ *  - Temp        = 0 (driver ADE7880 tidak menyediakan pembacaan suhu).
+ *  - SEC         = 0 (placeholder — belum ada sumber).
+ * ────────────────────────────────────────────────────────────────────────── */
+static MQTT_StatusTypeDef Publish_Full_Payload(pwr_value_t *pv, float wh)
+{
+    /* Nilai daya sudah dipisahkan di getElectricValue():
+     *   pv->Pow_R/S/T = daya AKTIF (Watt) murni dari ADE7880
+     *   pv->VA_R/S/T  = daya SEMU  (VA)  = V x I
+     * Jadi di sini tinggal pakai, tidak perlu panggil fungsi ADE lagi. */
+    float PV_R = pv->Pow_R, PV_S = pv->Pow_S, PV_T = pv->Pow_T;   /* aktif (W)  */
+    float VA_R = pv->VA_R,  VA_S = pv->VA_S,  VA_T = pv->VA_T;    /* semu (VA)  */
+
+    /* Total daya aktif */
+    float W_tot = PV_R + PV_S + PV_T;
+
+    /* Sinyal dBm dari CSQ (99 = unknown → 0) */
+    int sig_dbm = (mstat.csq == 99 || mstat.csq == 0) ? 0 : (-113 + 2 * mstat.csq);
+
+    /* 1) Susun DATA object dulu (untuk hitung CRC-nya) */
+    static char data_obj[768];
+    snprintf(data_obj, sizeof(data_obj),
+        "{\"H\":\"K\","
+        "\"La\":%.6f,\"Lo\":%.6f,"
+        "\"VR\":%.2f,\"VS\":%.2f,\"VT\":%.2f,"
+        "\"IR\":%.3f,\"IS\":%.3f,\"IT\":%.3f,"
+        "\"PFR\":%.2f,\"PFS\":%.2f,\"PFT\":%.2f,"
+        "\"PVR\":%.2f,\"PVS\":%.2f,\"PVT\":%.2f,"
+        "\"VAR\":%.2f,\"VAS\":%.2f,\"VAT\":%.2f,"
+        "\"WH\":%.3f,\"W\":%.2f,"
+        "\"Frek\":%.3f,\"Temp\":%.2f,\"Sig\":%d,"
+        "\"DO1\":%u,\"SEC\":%d}",
+        (double)LATITUDE, (double)LONGITUDE,
+        (double)pv->VRms_R, (double)pv->VRms_S, (double)pv->VRms_T,
+        (double)pv->IRms_R, (double)pv->IRms_S, (double)pv->IRms_T,
+        (double)pv->Pf_R,   (double)pv->Pf_S,   (double)pv->Pf_T,
+        (double)PV_R,       (double)PV_S,       (double)PV_T,
+        (double)VA_R,       (double)VA_S,       (double)VA_T,
+        (double)wh,         (double)W_tot,
+        (double)pv->Freq_R, 0.0, sig_dbm,
+        (unsigned)relay_state, 0);
+
+    /* 2) Hitung CRC dari DATA object, format "0xXXXX" */
+    uint16_t crc = Modbus_CRC16((const unsigned char *)data_obj, strlen(data_obj));
+    char crc_str[8];
+    snprintf(crc_str, sizeof(crc_str), "0x%04X", crc);
+
+    /* 3) Rangkai payload penuh: CRC + DATA + LU + Ver + COM + IMSI + IMEI */
+    static char full[1024];
+    snprintf(full, sizeof(full),
+        "{\"CRC\":\"%s\",\"DATA\":%s,"
+        "\"LU\":{\"dy\":\"%s\",\"dt\":\"%04d:%02d:%02d\",\"tm\":\"%02d:%02d:%02d\",\"sc\":\"ntp\"},"
+        "\"Ver\":\"%s\",\"COM\":\"GSM\",\"IMSI\":\"%s\",\"IMEI\":\"%s\"}",
+        crc_str, data_obj,
+        Nama_Hari(year, month, day),
+        year, month, day, hour, minute, second,
+        FW_VERSION, mstat.imsi, mstat.imei);
+
+    /* 4) Publish langsung (BUKAN MQTT_PublishWithCRC, karena format beda) */
+    return MQTT_Publish(mqtt_topic_pub, full, 1, 0);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
  *  Cetak nilai sensor ke UART debug (huart1) — untuk verifikasi pembacaan.
  * ────────────────────────────────────────────────────────────────────────── */
 static void Debug_Print_Sensor(pwr_value_t *pv, float wh)
@@ -184,6 +277,9 @@ int main(void)
 	  uint32_t millis(void) {
 		return HAL_GetTick();
 	  }
+  sprintf(mqtt_topic_pub, "SIKLON/SMARTPJU/JKT/%s/UPLINK/CCO", uid);
+  sprintf(mqtt_topic_sub, "SIKLON/SMARTPJU/JKT/%s/DOWNLINK", uid);
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -222,8 +318,7 @@ int main(void)
    HAL_Delay(6000);
 
    /* ── Cek status modem (ala QNavigator): sync AT + SIM + sinyal + registrasi ─ */
-   ModemStatus mstat;
-   Modem_SyncAndCheck(&mstat);   /* hasil dicetak ke huart1; nilai tersimpan di mstat */
+   Modem_SyncAndCheck(&mstat);
    /* Kalau mau berhenti sampai modem benar-benar siap:
     * while (!Modem_SyncAndCheck(&mstat)) HAL_Delay(3000);              */
 
@@ -316,7 +411,10 @@ int main(void)
        if (retry_count_local >= 5) goto MQTT_START;
    }
 
-   MQTT_PublishWithCRC(mqtt_regis_pub, "{\"H\":\"K\",\"CITY\":\"JKT\",\"CCO\":\"100100000001\",\"STATUS\":\"REG\"}", 1, 0);
+   char reg_paylaod [128];
+   snprintf(reg_paylaod, sizeof(reg_paylaod),"{\"H\":\"K\",\"CITY\":\"JKT\",\"CCO\":\"%s\",\"STATUS\":\"REG\"}",uid);
+
+   MQTT_PublishWithCRC(mqtt_regis_pub,reg_paylaod, 1, 0);
    HAL_Delay(50);
 
    /* ── Ambil waktu dari jaringan (via AT+QLTS=2) → isi year/month/day dst ──── */
@@ -371,33 +469,33 @@ int main(void)
 	      }
 
 	      /* ── (2) Publish data ke server tiap send_interval ──────────────────── */
-	      if ((HAL_GetTick() - last_publish_tick) >= send_interval)
-	      {
-	          /* refresh waktu sebelum kirim */
-	          mqtt_read_time();
-
-	          /* susun payload JSON (tanpa enkripsi) & publish dengan CRC */
-	          char data_obj[512];
-	          Build_KWH_Payload(data_obj, sizeof(data_obj), &pwr_val, WH);
-
-	          if (MQTT_PublishWithCRC(mqtt_topic_pub, data_obj, 1, 0) != MQTT_OK)
-	          {
-	              resend_count++;
-	              /* kalau modem terputus, reconnect lalu subscribe ulang */
-	              if (mqtt_disconnected || resend_count >= 3)
-	              {
-	                  resend_count = 0;
-	                  if (MQTT_Reconnect() == MQTT_OK)
-	                      MQTT_Subscribe(mqtt_topic_sub, 1);
-	              }
-	          }
-	          else
-	          {
-	              resend_count = 0;
-	          }
-
-	          last_publish_tick = HAL_GetTick();
-	      }
+//	      if ((HAL_GetTick() - last_publish_tick) >= send_interval)
+//	      {
+//	          /* refresh waktu sebelum kirim */
+//	          mqtt_read_time();
+//
+//	          /* susun payload JSON (tanpa enkripsi) & publish dengan CRC */
+//	          char data_obj[512];
+//	          Build_KWH_Payload(data_obj, sizeof(data_obj), &pwr_val, WH);
+//
+//	          if (MQTT_PublishWithCRC(mqtt_topic_pub, data_obj, 1, 0) != MQTT_OK)
+//	          {
+//	              resend_count++;
+//	              /* kalau modem terputus, reconnect lalu subscribe ulang */
+//	              if (mqtt_disconnected || resend_count >= 3)
+//	              {
+//	                  resend_count = 0;
+//	                  if (MQTT_Reconnect() == MQTT_OK)
+//	                      MQTT_Subscribe(mqtt_topic_sub, 1);
+//	              }
+//	          }
+//	          else
+//	          {
+//	              resend_count = 0;
+//	          }
+//
+//	          last_publish_tick = HAL_GetTick();
+//	      }
 
 	      /* ── (3) Handle downlink: request data (H:R) & set relay (H:S/DO1) ────── */
 	      if (mqtt_data_ready)
@@ -411,12 +509,10 @@ int main(void)
 	              char data_obj_in[512];
 	              if (MQTT_ExtractDataObject(last_payload, data_obj_in, sizeof(data_obj_in)))
 	              {
-	                  /* Request data (H:R) → device kirim parameter ADE + KWH sekarang */
+	                  /* Request data (H:R) → device kirim payload lengkap sekarang */
 	                  if (has_hcmd(data_obj_in, 'R'))
 	                  {
-	                      char data_obj_out[512];
-	                      Build_KWH_Payload(data_obj_out, sizeof(data_obj_out), &pwr_val, WH);
-	                      MQTT_PublishWithCRC(mqtt_topic_pub, data_obj_out, 1, 0);
+	                      Publish_Full_Payload(&pwr_val, WH);
 	                  }
 	                  /* Set output (H:S) → kendalikan relay DO1 (0 = OFF, 1 = ON) */
 	                  else if (has_hcmd(data_obj_in, 'S'))
