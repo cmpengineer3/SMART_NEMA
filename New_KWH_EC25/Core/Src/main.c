@@ -31,6 +31,7 @@
 #include "mqtt.h"
 #include "uart.h"
 #include "config.h"
+#include "modem_check.h"
 
 #include "powermeter_ade7880.h"   /* driver ADE7880 (bit-bang)          */
 #include "KWH.h"                  /* getElectricValue, WH, updatePwmVal */
@@ -58,6 +59,46 @@ static pwr_value_t last_pwr_val;
 static WH_T        tWH;
 static float       WH = 0.0f;
 static uint16_t    ADEStuck_count = 0;
+
+/* Status relay (DO1). 0 = OFF, 1 = ON. Dikendalikan via downlink H:S. */
+static uint8_t relay_state = 0;
+
+/* ──────────────────────────────────────────────────────────────────────────
+ *  Kontrol relay DO1 (pin PA1 = RELAY_Pin).
+ *
+ *  POLARITAS active-low (sesuai referensi KWH_EC25_V1c/updatePwmVal):
+ *    nilai 1 (ON)  → pin di-RESET (LOW)
+ *    nilai 0 (OFF) → pin di-SET  (HIGH)
+ *  Kalau modul relay board-mu active-high, tinggal balik SET/RESET di sini.
+ * ────────────────────────────────────────────────────────────────────────── */
+static void Relay_Set(uint8_t on)
+{
+    if (on)
+        HAL_GPIO_WritePin(RELAY_GPIO_Port, RELAY_Pin, GPIO_PIN_RESET);  /* ON  */
+    else
+        HAL_GPIO_WritePin(RELAY_GPIO_Port, RELAY_Pin, GPIO_PIN_SET);    /* OFF */
+    relay_state = on ? 1 : 0;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ *  Cek apakah DATA object berisi "H":"<c>" — TOLERAN SPASI.
+ *  Cocok untuk "H":"S" maupun "H": "S" (server kadang kasih spasi).
+ *  return true kalau ketemu.
+ * ────────────────────────────────────────────────────────────────────────── */
+static bool has_hcmd(const char *data_obj, char c)
+{
+    const char *p = strstr(data_obj, "\"H\"");   /* cari key "H"        */
+    if (p == NULL) return false;
+    p += 3;                                        /* lewati "H"          */
+    while (*p == ' ') p++;                         /* skip spasi          */
+    if (*p != ':') return false;
+    p++;                                           /* skip ':'            */
+    while (*p == ' ') p++;                         /* skip spasi          */
+    if (*p != '\"') return false;
+    p++;                                           /* skip quote pembuka  */
+    return (*p == c);                              /* cocokkan hurufnya   */
+}
+
 
 /* ──────────────────────────────────────────────────────────────────────────
  *  Build payload JSON data KWH (TANPA enkripsi).
@@ -124,11 +165,7 @@ static void Debug_Print_Sensor(pwr_value_t *pv, float wh)
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-//static void MX_GPIO_Init(void);
-//static void MX_UART4_Init(void);
-//static void MX_USART2_UART_Init(void);
-//static void MX_USART3_UART_Init(void);
-//static void MX_USART6_UART_Init(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -184,6 +221,12 @@ int main(void)
    HAL_GPIO_WritePin(LTE_PWR_GPIO_Port, LTE_PWR_Pin, GPIO_PIN_SET);
    HAL_Delay(6000);
 
+   /* ── Cek status modem (ala QNavigator): sync AT + SIM + sinyal + registrasi ─ */
+   ModemStatus mstat;
+   Modem_SyncAndCheck(&mstat);   /* hasil dicetak ke huart1; nilai tersimpan di mstat */
+   /* Kalau mau berhenti sampai modem benar-benar siap:
+    * while (!Modem_SyncAndCheck(&mstat)) HAL_Delay(3000);              */
+
    for (int i = 0; i < 3; i++)
    {
        UART_SendATCommand("ATE0");
@@ -194,7 +237,23 @@ int main(void)
    /* ── Inisialisasi ADE7880 (bit-bang) ────────────────────────────────────── */
    ADE7880_Config();
 
-   /* ── Ambil WH terakhir dari FRAM (persisten) ────────────────────────────── */
+   /* ── Relay awal OFF ─────────────────────────────────────────────────────── */
+   Relay_Set(0);
+
+//   char dbg[64];
+//   HAL_StatusTypeDef st = HAL_I2C_IsDeviceReady(&hi2c1, 0xA0, 3, 100);
+//   if (st == HAL_OK) {
+//       HAL_UART_Transmit(&huart1, (uint8_t*)"[FRAM] device ready\r\n", 21, 500);
+//       WH = FRAM_Read_WH();
+//       if (WH < 0 || WH > 1.0e9f) WH = 0;
+//   } else {
+//       int n = sprintf(dbg, "[FRAM] TIDAK terdeteksi, status=%d\r\n", st);
+//       HAL_UART_Transmit(&huart1, (uint8_t*)dbg, n, 500);
+//       WH = 0;
+//   }
+//   tWH.WH_R = WH / 3; tWH.WH_S = WH / 3; tWH.WH_T = WH / 3;
+//   setWH(&tWH);
+//   /* ── Ambil WH terakhir dari FRAM (persisten) ────────────────────────────── */
    WH = FRAM_Read_WH();
    if (WH < 0 || WH > 1.0e9f) WH = 0;   /* guard nilai sampah pertama kali */
    tWH.WH_R = WH / 3;
@@ -257,7 +316,7 @@ int main(void)
        if (retry_count_local >= 5) goto MQTT_START;
    }
 
-   MQTT_Publish(mqtt_topic_pub, "{\"MSG\":\"Terhubung SMART-KWH MQTT\"}", 1, 0);
+   MQTT_PublishWithCRC(mqtt_regis_pub, "{\"H\":\"K\",\"CITY\":\"JKT\",\"CCO\":\"100100000001\",\"STATUS\":\"REG\"}", 1, 0);
    HAL_Delay(50);
 
    /* ── Ambil waktu dari jaringan (via AT+QLTS=2) → isi year/month/day dst ──── */
@@ -340,30 +399,53 @@ int main(void)
 	          last_publish_tick = HAL_GetTick();
 	      }
 
-	      /* ── (3) Handle downlink: hanya request DATA:{"H":"R"} (seperti PJUTS) ── */
+	      /* ── (3) Handle downlink: request data (H:R) & set relay (H:S/DO1) ────── */
 	      if (mqtt_data_ready)
 	      {
 	          if (MQTT_ProcessIncoming(last_topic,   sizeof(last_topic),
 	                                   last_payload, sizeof(last_payload)))
 	          {
-	              /* verifikasi CRC dulu (format {"CRC":..,"DATA":..}) */
-	              if (MQTT_VerifyPayloadCRC(last_payload))
+	              /* Ekstrak DATA object langsung (TIDAK wajib CRC — server tes
+	               * kirim tanpa field CRC). Kalau server-mu nanti pakai CRC,
+	               * bungkus lagi blok ini dengan if (MQTT_VerifyPayloadCRC(...)). */
+	              char data_obj_in[512];
+	              if (MQTT_ExtractDataObject(last_payload, data_obj_in, sizeof(data_obj_in)))
 	              {
-	                  char data_obj_in[512];
-	                  if (MQTT_ExtractDataObject(last_payload, data_obj_in, sizeof(data_obj_in)))
+	                  /* Request data (H:R) → device kirim parameter ADE + KWH sekarang */
+	                  if (has_hcmd(data_obj_in, 'R'))
 	                  {
-	                      /* Request data → device kirim parameter ADE + KWH sekarang */
-	                      if (strstr(data_obj_in, "\"H\":\"R\"") != NULL)
+	                      char data_obj_out[512];
+	                      Build_KWH_Payload(data_obj_out, sizeof(data_obj_out), &pwr_val, WH);
+	                      MQTT_PublishWithCRC(mqtt_topic_pub, data_obj_out, 1, 0);
+	                  }
+	                  /* Set output (H:S) → kendalikan relay DO1 (0 = OFF, 1 = ON) */
+	                  else if (has_hcmd(data_obj_in, 'S'))
+	                  {
+	                      char *pdo = strstr(data_obj_in, "\"DO1\"");
+	                      if (pdo != NULL)
 	                      {
-	                          char data_obj_out[512];
-	                          Build_KWH_Payload(data_obj_out, sizeof(data_obj_out), &pwr_val, WH);
-	                          MQTT_PublishWithCRC(mqtt_topic_pub, data_obj_out, 1, 0);
+	                          pdo = strchr(pdo, ':');          /* ':' pemisah key:value */
+	                          if (pdo != NULL)
+	                          {
+	                              pdo++;
+	                              while (*pdo == ' ') pdo++;    /* toleran spasi        */
+	                              int do1 = atoi(pdo);         /* 0 atau 1             */
+	                              Relay_Set(do1 ? 1 : 0);
+
+	                              /* Balas status relay terkini sebagai konfirmasi */
+	                              char ack[64];
+	                              snprintf(ack, sizeof(ack),
+	                                       "{\"UID\":\"%s\",\"DO1\":%u}", uid, (unsigned)relay_state);
+	                              MQTT_PublishWithCRC(mqtt_topic_pub, ack, 1, 0);
+	                          }
 	                      }
 	                  }
 	              }
+
+	              mqtt_data_ready = false;   /* reset flag setelah diproses */
 	          }
 	      }
-  }
+}
   /* USER CODE END 3 */
 }
 

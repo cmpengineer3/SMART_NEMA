@@ -14,7 +14,7 @@
 #include "mqtt.h"
 
 /* ── Identitas device ─────────────────────────────────────────────────────── */
-#define uid "KWH01310000022"
+#define uid "KWH0426DEMO0"
 #define LATITUDE   -7.276598
 #define LONGITUDE  112.795616
 
@@ -25,6 +25,7 @@ extern char client_id[64];
 extern char username[64];
 extern char password[64];
 
+extern char mqtt_regis_pub[128];
 extern char mqtt_topic_pub[128];
 extern char mqtt_topic_sub[128];
 

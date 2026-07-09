@@ -244,18 +244,18 @@ int main(void)
 	       }
 
 	       /* ── Publish data ke MQTT tiap send_interval ──────────────────────── */
-	       if ((now - last_publish_tick) >= send_interval)
-	       {
-	           last_publish_tick = now;
-
-	           char data_obj[512];
-	           Build_Sensor_Payload(data_obj, sizeof(data_obj));
-
-	           if (MQTT_PublishWithCRC(mqtt_topic_pub, data_obj, 1, 0) != MQTT_OK)
-	           {
-	               resend_count++;
-	           }
-	       }
+//	       if ((now - last_publish_tick) >= send_interval)
+//	       {
+//	           last_publish_tick = now;
+//
+//	           char data_obj[512];
+//	           Build_Sensor_Payload(data_obj, sizeof(data_obj));
+//
+//	           if (MQTT_PublishWithCRC(mqtt_topic_pub, data_obj, 1, 0) != MQTT_OK)
+//	           {
+//	               resend_count++;
+//	           }
+//	       }
 
 	       /* ── Reconnect otomatis kalau modem lapor +QMTSTAT disconnect ──────── */
 	       if (mqtt_disconnected)

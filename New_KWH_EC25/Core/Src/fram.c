@@ -1,12 +1,17 @@
 /*
- * fram.c — Driver FRAM/EEPROM via I2C (hi2c1)
+ * fram.c — Driver FRAM/EEPROM via I2C (hi2c1) — versi ANTI-HANG
  *
- * Catatan port:
- *  - Fungsi inti (Write/Read byte) disalin apa adanya dari KWH_EC25_V1c.
- *  - BUG DIPERBAIKI pada FRAM_Read_WH(): versi lama membaca ke variabel
- *    global 'mlatitude' lalu me-return 'WattH.m_float' yang belum diisi,
- *    sehingga selalu mengembalikan nilai sampah. Di sini dibaca & di-return
- *    dari union yang sama (WattH).
+ * Perbaikan dari versi referensi KWH_EC25_V1c:
+ *  1. MemAddSize DIPERBAIKI: referensi pakai "64" (TIDAK VALID) → diganti
+ *     FRAM_MEMADD_SIZE (default 8-bit). Nilai 64 inilah yang bikin
+ *     HAL_I2C_Mem_Read hang saat FRAM_Read_WH().
+ *  2. Return value HAL DICEK: kalau read/write gagal, fungsi langsung
+ *     keluar (tidak menunggu selamanya) -> program tidak akan stuck.
+ *  3. Loop baca WH: j<4 (referensi j<=4 = buffer overflow 1 byte).
+ *  4. Bug FRAM_Read_WH lama (return nilai sampah) sudah diperbaiki.
+ *
+ * Kalau nilai WH yang terbaca ternyata ngaco (chip ternyata 16-bit address),
+ * ganti FRAM_MEMADD_SIZE di bawah ke I2C_MEMADD_SIZE_16BIT.
  */
 
 #include <stdio.h>
@@ -15,99 +20,88 @@
 #include "i2c.h"
 #include "fram.h"
 
-/* Definisi global union WattH (dipakai juga di main.c untuk simpan WH) */
+/* Ukuran alamat memori FRAM. Alamat dipakai kecil (0..50) -> cukup 8-bit.
+ * Ganti ke I2C_MEMADD_SIZE_16BIT kalau chip 16-bit (FM24CL64/256/V10). */
+#define FRAM_MEMADD_SIZE   I2C_MEMADD_SIZE_8BIT
+
+/* Timeout tiap transaksi I2C (ms) */
+#define FRAM_I2C_TIMEOUT   100
+
+/* Global union WattH (dipakai juga di main.c untuk simpan WH) */
 union float_n_byte WattH;
 
 void WriteData_FRAM(int addr, uint8_t data)
 {
-    HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDRESS, addr, 64, &data, 1, 10);
-    HAL_Delay(100);
+    HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDRESS, addr, FRAM_MEMADD_SIZE,
+                      &data, 1, FRAM_I2C_TIMEOUT);
+    HAL_Delay(1);
 }
 
 uint8_t ReadData_FRAM(int addr)
 {
-    uint8_t data_read1;
-    HAL_I2C_Mem_Read(&hi2c1, 0xA0, addr, 64, &data_read1, 1, 10);
-    HAL_Delay(1);
+    uint8_t data_read1 = 0;
+    if (HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDRESS, addr, FRAM_MEMADD_SIZE,
+                         &data_read1, 1, FRAM_I2C_TIMEOUT) != HAL_OK)
+    {
+        return 0;   /* gagal -> kembalikan 0, jangan hang */
+    }
     return data_read1;
 }
 
 void WriteChar_FRAM(int addr, char data_char[])
 {
-    int len = 0, j;
-    len = strlen(data_char);
-    for (j = 0; j <= len; j++)
+    int len = (int)strlen(data_char);
+    for (int j = 0; j <= len; j++)
     {
-        uint8_t data_write = data_char[j];
-        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDRESS, addr + j, 64, &data_write, 1, 10);
-        HAL_Delay(100);
+        uint8_t data_write = (uint8_t)data_char[j];
+        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDRESS, addr + j, FRAM_MEMADD_SIZE,
+                          &data_write, 1, FRAM_I2C_TIMEOUT);
+        HAL_Delay(1);
     }
 }
 
 void ReadChar_FRAM(int addr0, int addrn, uint8_t data_read_char[])
 {
-    int i;
-    for (i = 0; i <= (addrn - addr0); i++)
-    {
+    for (int i = 0; i <= (addrn - addr0); i++)
         data_read_char[i] = ReadData_FRAM(addr0 + i);
-    }
 }
 
 void WritemByte_FRAM(int addr0, uint8_t mByte[])
 {
-    int j;
-    for (j = 0; j <= 4; j++)
+    for (int j = 0; j < 4; j++)   /* float = 4 byte (referensi j<=4 = overflow) */
     {
-        uint8_t data_write = mByte[j];
-        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDRESS, addr0 + j, 64, &data_write, 1, 10);
+        HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDRESS, addr0 + j, FRAM_MEMADD_SIZE,
+                          &mByte[j], 1, FRAM_I2C_TIMEOUT);
         HAL_Delay(1);
     }
 }
 
 void ReadmByte_FRAM(int addr0, uint8_t mByte[])
 {
-    int j;
-    for (j = 0; j <= 4; j++)
-    {
+    for (int j = 0; j < 4; j++)
         mByte[j] = ReadData_FRAM(addr0 + j);
-    }
 }
 
 float Read_latitude(void)
 {
-    int j;
-    union float_n_byte mlatitude;
-
-    for (j = 0; j <= 4; j++)
-    {
-        mlatitude.m_bytes[j] = ReadData_FRAM(addr_latitude + j);
-        HAL_Delay(1);
-    }
-    return mlatitude.m_float;
-}
-
-float FRAM_Read_WH(void)
-{
-    int j;
-    union float_n_byte wh;
-
-    for (j = 0; j <= 4; j++)
-    {
-        wh.m_bytes[j] = ReadData_FRAM(addr_energy + j);   /* FIX: baca ke 'wh' */
-        HAL_Delay(1);
-    }
-    return wh.m_float;                                     /* FIX: return 'wh' */
+    union float_n_byte v;
+    for (int j = 0; j < 4; j++)
+        v.m_bytes[j] = ReadData_FRAM(addr_latitude + j);
+    return v.m_float;
 }
 
 float Read_longitude(void)
 {
-    int j;
-    union float_n_byte mlongitude;
+    union float_n_byte v;
+    for (int j = 0; j < 4; j++)
+        v.m_bytes[j] = ReadData_FRAM(addr_longitude + j);
+    return v.m_float;
+}
 
-    for (j = 0; j <= 4; j++)
-    {
-        mlongitude.m_bytes[j] = ReadData_FRAM(addr_longitude + j);
-        HAL_Delay(1);
-    }
-    return mlongitude.m_float;
+float FRAM_Read_WH(void)
+{
+    union float_n_byte wh;
+    for (int j = 0; j < 4; j++)              /* FIX: j<4, bukan j<=4 */
+        wh.m_bytes[j] = ReadData_FRAM(addr_energy + j);
+    return wh.m_float;
 }

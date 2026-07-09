@@ -22,14 +22,17 @@
 // Untuk broker produksi (isi di device, JANGAN commit ke repo publik):
  char broker_host[64] = "mqtt.caturmukti.com";
  int  broker_port     = 1883;
- char client_id[64]   = "SMART_KWH";
- char username[64]    = "admin";
- char password[64]    = "xK645P7Np6LR";
+ char client_id[64]   = "SMART_CCO";
+ char username[64]    = "ngadimin";
+ char password[64]    = "ngadimin#123";
+// char username[64]    = "admin";
+// char password[64]    = "xK645P7Np6LR";
 
 
 /* ── Topic MQTT ───────────────────────────────────────────────────────────── */
-char mqtt_topic_pub[128] = "SIKLON/SMARTKWH/JKT/KWH01310000022/UPLINK/CCO";
-char mqtt_topic_sub[128] = "SIKLON/SMARTKWH/JKT/KWH01310000022/DOWNLINK/CCO";
+char mqtt_regis_pub[128] = "SIKLON/SMARTPJU/CCO/REGISTER";
+char mqtt_topic_pub[128] = "SIKLON/SMARTPJU/JKT/KWH0426DEMO0/UPLINK/CCO";
+char mqtt_topic_sub[128] = "SIKLON/SMARTPJU/JKT/KWH0426DEMO0/DOWNLINK";
 
 char mac_cco[24];
 

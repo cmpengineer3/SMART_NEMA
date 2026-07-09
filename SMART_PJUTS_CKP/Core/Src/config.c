@@ -6,19 +6,19 @@
  */
 
 #include "config.h"
-//char broker_host[64] = "mqtt.caturmukti.com";
-//int  broker_port     = 1883;
-//
-//char client_id[64]   = "PJU_TS";
-//char username[64]    = "admin";
-//char password[64]    = "xK645P7Np6LR";
+char broker_host[64] = "mqtt.caturmukti.com";
+int  broker_port     = 1883;
+
+char client_id[64]   = "PJU_TS";
+char username[64]    = "ngadimin";
+char password[64]    = "ngadimin#123";
 //==============================================================================================================
 // Konfigurasi MQTT Broker
-char broker_host[64] = "broker.hivemq.com";
-int  broker_port     = 1883;
-char client_id[64]   = "stm32Client";
-char username[64]    = "";  // kosong = tanpa auth
-char password[64]    = "";
+//char broker_host[64] = "broker.hivemq.com";
+//int  broker_port     = 1883;
+//char client_id[64]   = "stm32Client";
+//char username[64]    = "";  // kosong = tanpa auth
+//char password[64]    = "";
 
 //==============================================================================================================
 // Topic MQTT
