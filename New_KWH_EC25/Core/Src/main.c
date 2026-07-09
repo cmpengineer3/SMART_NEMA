@@ -214,7 +214,12 @@ static MQTT_StatusTypeDef Publish_Full_Payload(pwr_value_t *pv, float wh)
         FW_VERSION, mstat.imsi, mstat.imei);
 
     /* 4) Publish langsung (BUKAN MQTT_PublishWithCRC, karena format beda) */
-    return MQTT_Publish(mqtt_topic_pub, full, 1, 0);
+    MQTT_StatusTypeDef st = MQTT_Publish(mqtt_topic_pub, full, 1, 0);
+    if (st == MQTT_OK)
+        HAL_UART_Transmit(&huart1, (uint8_t*)"[PUBLISH] payload terkirim\r\n", 28, 500);
+    else
+        HAL_UART_Transmit(&huart1, (uint8_t*)"[PUBLISH] payload GAGAL\r\n", 25, 500);
+    return st;
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -222,21 +227,26 @@ static MQTT_StatusTypeDef Publish_Full_Payload(pwr_value_t *pv, float wh)
  * ────────────────────────────────────────────────────────────────────────── */
 static void Debug_Print_Sensor(pwr_value_t *pv, float wh)
 {
-    char buff[120];
+    char buff[140];
     int n;
-    n = sprintf(buff, "VR=%3.2f IR=%2.2f PFR=%2.2f PR=%2.2f\r\n",
-                pv->VRms_R, pv->IRms_R, pv->Pf_R, pv->Pow_R);
+    /* PW = daya AKTIF (Watt, dari ADE) | VA = daya SEMU (V x I) */
+    n = sprintf(buff, "R: V=%3.2f I=%2.3f PF=%1.2f PW=%2.2f VA=%2.2f\r\n",
+                pv->VRms_R, pv->IRms_R, pv->Pf_R, pv->Pow_R, pv->VA_R);
     HAL_UART_Transmit(&huart1, (uint8_t*)buff, n, 1000);
-    n = sprintf(buff, "VS=%3.2f IS=%2.2f PFS=%2.2f PS=%2.2f\r\n",
-                pv->VRms_S, pv->IRms_S, pv->Pf_S, pv->Pow_S);
+    n = sprintf(buff, "S: V=%3.2f I=%2.3f PF=%1.2f PW=%2.2f VA=%2.2f\r\n",
+                pv->VRms_S, pv->IRms_S, pv->Pf_S, pv->Pow_S, pv->VA_S);
     HAL_UART_Transmit(&huart1, (uint8_t*)buff, n, 1000);
-    n = sprintf(buff, "VT=%3.2f IT=%2.2f PFT=%2.2f PT=%2.2f\r\n",
-                pv->VRms_T, pv->IRms_T, pv->Pf_T, pv->Pow_T);
+    n = sprintf(buff, "T: V=%3.2f I=%2.3f PF=%1.2f PW=%2.2f VA=%2.2f\r\n",
+                pv->VRms_T, pv->IRms_T, pv->Pf_T, pv->Pow_T, pv->VA_T);
     HAL_UART_Transmit(&huart1, (uint8_t*)buff, n, 1000);
-    n = sprintf(buff, "WH=%3.5f\r\n", wh);
+    n = sprintf(buff, "Frek=%2.2f  WH=%3.5f\r\n", pv->Freq_R, wh);
     HAL_UART_Transmit(&huart1, (uint8_t*)buff, n, 1000);
 }
 
+static void DBG(const char *s)
+{
+    HAL_UART_Transmit(&huart1, (uint8_t*)s, strlen(s), 500);
+}
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -375,8 +385,10 @@ int main(void)
    UART_SendATCommand("AT+QMTCLOSE=0");
    HAL_Delay(2000);
 
+   DBG("[MQTT] Membuka koneksi ke broker...\r\n");
    while (MQTT_Open() != MQTT_OK)
    {
+       DBG("[MQTT] QMTOPEN gagal, retry...\r\n");
        MQTT_CheckNetwork();
        UART_SendATCommand("AT+QMTCLOSE=0");
        HAL_Delay(3000);
@@ -385,6 +397,7 @@ int main(void)
 
        if (total_retry >= 10)
        {
+           DBG("[MQTT] Gagal terus, reset device.\r\n");
            HAL_GPIO_WritePin(EN3V8_GPIO_Port, EN3V8_Pin, GPIO_PIN_RESET);
            HAL_Delay(3000);
            NVIC_SystemReset();
@@ -392,9 +405,12 @@ int main(void)
        }
        if (retry_count_local >= 5) { retry_count_local = 0; goto MQTT_START; }
    }
+   DBG("[MQTT] Broker terbuka (QMTOPEN OK)\r\n");
 
+   DBG("[MQTT] Menghubungkan (QMTCONN)...\r\n");
    while (MQTT_Connect() != MQTT_OK)
    {
+       DBG("[MQTT] QMTCONN gagal, retry...\r\n");
        UART_SendATCommand("AT+QMTDISC=0");
        retry_count_local++;
        HAL_Delay(500);
@@ -402,19 +418,25 @@ int main(void)
        total_retry++;
        if (total_retry > 10) { NVIC_SystemReset(); while (1) {} }
    }
+   DBG("[MQTT] Terhubung ke broker (QMTCONN OK)\r\n");
 
    retry_count_local = 0;
    while (MQTT_Subscribe(mqtt_topic_sub, 1) != MQTT_OK)
    {
+       DBG("[MQTT] Subscribe gagal, retry...\r\n");
        HAL_Delay(500);
        retry_count_local++;
        if (retry_count_local >= 5) goto MQTT_START;
    }
+   DBG("[MQTT] Subscribe topic downlink OK\r\n");
 
    char reg_paylaod [128];
    snprintf(reg_paylaod, sizeof(reg_paylaod),"{\"H\":\"K\",\"CITY\":\"JKT\",\"CCO\":\"%s\",\"STATUS\":\"REG\"}",uid);
 
-   MQTT_PublishWithCRC(mqtt_regis_pub,reg_paylaod, 1, 0);
+   if (MQTT_PublishWithCRC(mqtt_regis_pub,reg_paylaod, 1, 0) == MQTT_OK)
+       DBG("[MQTT] Registrasi terkirim\r\n");
+   else
+       DBG("[MQTT] Registrasi GAGAL\r\n");
    HAL_Delay(50);
 
    /* ── Ambil waktu dari jaringan (via AT+QLTS=2) → isi year/month/day dst ──── */
@@ -503,6 +525,11 @@ int main(void)
 	          if (MQTT_ProcessIncoming(last_topic,   sizeof(last_topic),
 	                                   last_payload, sizeof(last_payload)))
 	          {
+	              /* Tampilkan downlink yang diterima */
+	              DBG("[DOWNLINK] diterima: ");
+	              DBG(last_payload);
+	              DBG("\r\n");
+
 	              /* Ekstrak DATA object langsung (TIDAK wajib CRC — server tes
 	               * kirim tanpa field CRC). Kalau server-mu nanti pakai CRC,
 	               * bungkus lagi blok ini dengan if (MQTT_VerifyPayloadCRC(...)). */
@@ -512,7 +539,8 @@ int main(void)
 	                  /* Request data (H:R) → device kirim payload lengkap sekarang */
 	                  if (has_hcmd(data_obj_in, 'R'))
 	                  {
-	                      Publish_Full_Payload(&pwr_val, WH);
+	                      DBG("[DOWNLINK] H:R -> kirim data sekarang\r\n");
+	                      Publish_Full_Payload(&pwr_val, WH);   /* status di-print di dalam fungsi */
 	                  }
 	                  /* Set output (H:S) → kendalikan relay DO1 (0 = OFF, 1 = ON) */
 	                  else if (has_hcmd(data_obj_in, 'S'))
@@ -528,6 +556,11 @@ int main(void)
 	                              int do1 = atoi(pdo);         /* 0 atau 1             */
 	                              Relay_Set(do1 ? 1 : 0);
 
+	                              char m[48];
+	                              int mn = sprintf(m, "[DOWNLINK] H:S -> relay %s\r\n",
+	                                               relay_state ? "ON" : "OFF");
+	                              HAL_UART_Transmit(&huart1, (uint8_t*)m, mn, 500);
+
 	                              /* Balas status relay terkini sebagai konfirmasi */
 	                              char ack[64];
 	                              snprintf(ack, sizeof(ack),
@@ -535,6 +568,10 @@ int main(void)
 	                              MQTT_PublishWithCRC(mqtt_topic_pub, ack, 1, 0);
 	                          }
 	                      }
+	                  }
+	                  else
+	                  {
+	                      DBG("[DOWNLINK] perintah tidak dikenali\r\n");
 	                  }
 	              }
 
