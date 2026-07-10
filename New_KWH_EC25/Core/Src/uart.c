@@ -1,4 +1,7 @@
 #include "uart.h"
+#include "uid_config.h"          /* UID_FeedByte untuk perintah SETUID via huart1 */
+
+extern uint8_t uid_rx_byte;       /* penampung byte RX huart1 (didefinisikan di main.c) */
 
 /* ── Internal state ───────────────────────────────────────────────────────── */
 static UART_HandleTypeDef *s_huart  = NULL;
@@ -75,6 +78,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart != s_huart)
     {
+        /* Byte dari UART debug (huart1) → salurkan ke handler UID (SETUID) */
+        if (huart->Instance == USART1)
+        {
+            UID_FeedByte(uid_rx_byte);
+            HAL_UART_Receive_IT(huart, &uid_rx_byte, 1);
+        }
         return;
     }
 

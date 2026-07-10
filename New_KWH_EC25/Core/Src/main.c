@@ -36,6 +36,7 @@
 #include "powermeter_ade7880.h"   /* driver ADE7880 (bit-bang)          */
 #include "KWH.h"                  /* getElectricValue, WH, updatePwmVal */
 #include "fram.h"                 /* simpan/baca WH persisten           */
+#include "uid_config.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -63,10 +64,13 @@ static uint16_t    ADEStuck_count = 0;
 /* Status relay (DO1). 0 = OFF, 1 = ON. Dikendalikan via downlink H:S. */
 static uint8_t relay_state = 0;
 
+/* Byte penampung RX huart1 (untuk perintah SETUID via debug) */
+uint8_t uid_rx_byte = 0;
+
 static ModemStatus mstat;
 
 /* Versi firmware (untuk field "Ver" di payload) */
-#define FW_VERSION "2026.07.01"
+#define FW_VERSION "2026.07.10"
 
 /* ──────────────────────────────────────────────────────────────────────────
  *  Kontrol relay DO1 (pin PA1 = RELAY_Pin).
@@ -120,7 +124,7 @@ static void Build_KWH_Payload(char *out, size_t out_size, pwr_value_t *pv, float
         "\"PWR\":%.2f,\"PWS\":%.2f,\"PWT\":%.2f,"
         "\"PFR\":%.2f,\"PFS\":%.2f,\"PFT\":%.2f,"
         "\"FREQ\":%.2f,\"WH\":%.2f}",
-        uid,
+        device_uid,
         year, month, day, hour, minute, second,
         (double)pv->VRms_R, (double)pv->VRms_S, (double)pv->VRms_T,
         (double)pv->IRms_R, (double)pv->IRms_S, (double)pv->IRms_T,
@@ -287,8 +291,8 @@ int main(void)
 	  uint32_t millis(void) {
 		return HAL_GetTick();
 	  }
-  sprintf(mqtt_topic_pub, "SIKLON/SMARTPJU/JKT/%s/UPLINK/CCO", uid);
-  sprintf(mqtt_topic_sub, "SIKLON/SMARTPJU/JKT/%s/DOWNLINK", uid);
+//  sprintf(mqtt_topic_pub, "SIKLON/SMARTPJU/JKT/%s/UPLINK/CCO", uid);
+//  sprintf(mqtt_topic_sub, "SIKLON/SMARTPJU/JKT/%s/DOWNLINK", uid);
 
   /* USER CODE END 1 */
 
@@ -318,6 +322,14 @@ int main(void)
   MX_TIM2_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+
+  /* ── Muat UID dari FRAM & susun topic (setelah I2C/FRAM siap) ────────────── */
+  UID_Load();   /* isi device_uid dari FRAM, atau default kalau belum ada */
+  sprintf(mqtt_topic_pub, "SIKLON/SMARTPJU/JKT/%s/UPLINK/CCO", device_uid);
+  sprintf(mqtt_topic_sub, "SIKLON/SMARTPJU/JKT/%s/DOWNLINK",   device_uid);
+
+  /* ── Aktifkan RX debug (huart1) untuk perintah SETUID ────────────────────── */
+  HAL_UART_Receive_IT(&huart1, &uid_rx_byte, 1);
   /* ── UART modem (huart3) ────────────────────────────────────────────────── */
    UART_Init_Buffer(&huart3);
 
@@ -431,7 +443,7 @@ int main(void)
    DBG("[MQTT] Subscribe topic downlink OK\r\n");
 
    char reg_paylaod [128];
-   snprintf(reg_paylaod, sizeof(reg_paylaod),"{\"H\":\"K\",\"CITY\":\"JKT\",\"CCO\":\"%s\",\"STATUS\":\"REG\"}",uid);
+   snprintf(reg_paylaod, sizeof(reg_paylaod),"{\"H\":\"K\",\"CITY\":\"JKT\",\"CCO\":\"%s\",\"STATUS\":\"REG\"}",device_uid);
 
    if (MQTT_PublishWithCRC(mqtt_regis_pub,reg_paylaod, 1, 0) == MQTT_OK)
        DBG("[MQTT] Registrasi terkirim\r\n");
@@ -453,6 +465,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	    /* ── (0) Cek perintah SETUID dari debug huart1 ──────────────────────── */
+	  UID_Process();
 	    /* ── (1) Baca ADE7880 tiap read_interval ────────────────────────────── */
 	  if ((HAL_GetTick() - last_read_tick) >= read_interval)
 	      {
@@ -564,7 +578,7 @@ int main(void)
 	                              /* Balas status relay terkini sebagai konfirmasi */
 	                              char ack[64];
 	                              snprintf(ack, sizeof(ack),
-	                                       "{\"UID\":\"%s\",\"DO1\":%u}", uid, (unsigned)relay_state);
+	                                       "{\"UID\":\"%s\",\"DO1\":%u}", device_uid, (unsigned)relay_state);
 	                              MQTT_PublishWithCRC(mqtt_topic_pub, ack, 1, 0);
 	                          }
 	                      }

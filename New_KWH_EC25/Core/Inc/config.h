@@ -14,7 +14,7 @@
 #include "mqtt.h"
 
 /* ── Identitas device ─────────────────────────────────────────────────────── */
-#define uid "KWH0426DEMO0"
+/* uid sekarang variabel di uid_config.h (device_uid), bisa diubah via SETUID */
 #define LATITUDE   -7.276598
 #define LONGITUDE  112.795616
 
