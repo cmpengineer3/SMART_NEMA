@@ -148,9 +148,21 @@ void UID_Process(void)
             uid_dbg("[UID] format salah (hanya A-Z a-z 0-9, maks 23 char)\r\n");
         }
     }
+    /* GETUID → tampilkan UID aktif */
+    else if (strcmp(cmd_buf, "GETUID") == 0)
+    {
+        uid_dbg("[UID] device_uid saat ini: ");
+        uid_dbg(device_uid);
+        uid_dbg("\r\n");
+    }
+    /* STATUS → tampilkan ringkasan koneksi (diimplementasi di main.c) */
+    else if (strcmp(cmd_buf, "STATUS") == 0)
+    {
+        Debug_PrintStatus();
+    }
     else
     {
-        uid_dbg("[UID] perintah tidak dikenali (pakai SETUID:xxxx)\r\n");
+        uid_dbg("[UID] perintah tidak dikenali (SETUID:xxx | GETUID | STATUS)\r\n");
     }
 
     /* Reset buffer untuk perintah berikutnya */

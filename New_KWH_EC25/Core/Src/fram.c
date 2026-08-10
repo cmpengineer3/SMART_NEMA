@@ -3,7 +3,7 @@
  *
  * Perbaikan dari versi referensi KWH_EC25_V1c:
  *  1. MemAddSize DIPERBAIKI: referensi pakai "64" (TIDAK VALID) → diganti
- *     FRAM_MEMADD_SIZE (default 8-bit). Nilai 64 inilah yang bikin
+ *     FRAM_MEMADD_SIZE = 16-BIT. Chip CY15B064J (64Kbit) butuh 2 byte
  *     HAL_I2C_Mem_Read hang saat FRAM_Read_WH().
  *  2. Return value HAL DICEK: kalau read/write gagal, fungsi langsung
  *     keluar (tidak menunggu selamanya) -> program tidak akan stuck.
@@ -11,7 +11,7 @@
  *  4. Bug FRAM_Read_WH lama (return nilai sampah) sudah diperbaiki.
  *
  * Kalau nilai WH yang terbaca ternyata ngaco (chip ternyata 16-bit address),
- * ganti FRAM_MEMADD_SIZE di bawah ke I2C_MEMADD_SIZE_16BIT.
+ * alamat; memakai 8-bit membuat WRITE gagal diam-diam.
  */
 
 #include <stdio.h>
@@ -22,7 +22,7 @@
 
 /* Ukuran alamat memori FRAM. Alamat dipakai kecil (0..50) -> cukup 8-bit.
  * Ganti ke I2C_MEMADD_SIZE_16BIT kalau chip 16-bit (FM24CL64/256/V10). */
-#define FRAM_MEMADD_SIZE   I2C_MEMADD_SIZE_8BIT
+#define FRAM_MEMADD_SIZE   I2C_MEMADD_SIZE_16BIT
 
 /* Timeout tiap transaksi I2C (ms) */
 #define FRAM_I2C_TIMEOUT   100

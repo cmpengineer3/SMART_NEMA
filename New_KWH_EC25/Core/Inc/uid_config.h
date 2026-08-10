@@ -42,4 +42,9 @@ void UID_FeedByte(uint8_t b);
  * simpan UID ke FRAM lalu restart device (agar topic tersusun ulang). */
 void UID_Process(void);
 
+/* Cetak ringkasan status (UID, sinyal, MQTT, IMEI/IMSI, WH).
+ * Diimplementasi di main.c (punya akses ke mstat & WH). Dipanggil oleh
+ * command "STATUS" di UID_Process(). */
+void Debug_PrintStatus(void);
+
 #endif /* INC_UID_CONFIG_H_ */

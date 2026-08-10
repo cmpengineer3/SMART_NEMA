@@ -11,6 +11,7 @@
  */
 
 #include "config.h"
+#include "uid_config.h"   /* device_uid untuk client_id */
 #include <stdio.h>
 
 /* ── Konfigurasi MQTT Broker (contoh: broker publik untuk tes) ────────────── */
@@ -23,7 +24,7 @@
 // Untuk broker produksi (isi di device, JANGAN commit ke repo publik):
  char broker_host[64] = "mqtt.caturmukti.com";
  int  broker_port     = 1883;
- char client_id[64]   = "SMART_CCO";
+ char client_id[64];
  char username[64]    = "ngadimin";
  char password[64]    = "ngadimin#123";
 // char username[64]    = "admin";
@@ -55,7 +56,9 @@ MQTT_Config Config_GetMQTT(void)
 
     cfg.broker_port = broker_port;
 
-    strncpy(cfg.client_id, client_id, sizeof(cfg.client_id) - 1);
+    /* client_id MENGIKUTI device_uid (bukan variabel client_id[]).
+     * Config_GetMQTT() dipanggil setelah UID_Load(), jadi device_uid sudah terisi. */
+    strncpy(cfg.client_id, device_uid, sizeof(cfg.client_id) - 1);
     cfg.client_id[sizeof(cfg.client_id) - 1] = '\0';
 
     strncpy(cfg.username, username, sizeof(cfg.username) - 1);

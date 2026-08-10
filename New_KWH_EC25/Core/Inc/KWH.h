@@ -59,8 +59,14 @@ typedef struct WH_T{
 
 uint8_t updatePwmVal(RTC_TimeTypeDef* cTime,daily_schedule_t* pSch,int max);
 uint32_t getElectricValue(pwr_value_t* pPwrVal);
-void updateWh(void);
+/* Akumulasi energi (Wh) berdasarkan daya semu (VA) terakhir.
+ * elapsed_ms = selang waktu sejak pemanggilan sebelumnya (dalam ms).
+ * WAJIB dipanggil tiap siklus baca sensor, SETELAH getElectricValue(). */
+void updateWh(uint32_t elapsed_ms);
 void resetWH(void);
+
+/* getWH : ambil akumulator internal  → pval
+ * setWH : muat nilai pval            → akumulator internal (mis. restore FRAM) */
 void getWH(WH_T* pval);
 void setWH(WH_T* pval);
 #endif /* PJU_H_ */

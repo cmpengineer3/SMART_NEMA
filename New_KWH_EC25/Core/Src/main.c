@@ -251,6 +251,32 @@ static void DBG(const char *s)
 {
     HAL_UART_Transmit(&huart1, (uint8_t*)s, strlen(s), 500);
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ *  Cetak ringkasan status ke huart1 (dipanggil command "STATUS").
+ *  Menampilkan: UID, sinyal, status MQTT, IMEI/IMSI, WH.
+ * ────────────────────────────────────────────────────────────────────────── */
+void Debug_PrintStatus(void)
+{
+    char b[96];
+    int sig_dbm = (mstat.csq == 99 || mstat.csq == 0) ? 0 : (-113 + 2 * mstat.csq);
+
+    DBG("\r\n===== STATUS DEVICE =====\r\n");
+
+    sprintf(b, "UID    	: %s\r\n", device_uid);              DBG(b);
+    sprintf(b, "MQTT   	: %s\r\n",
+            mqtt_disconnected ? "TERPUTUS" : "TERHUBUNG");  DBG(b);
+    sprintf(b, "Sinyal 	: CSQ=%d (%d dBm)\r\n", mstat.csq, sig_dbm); DBG(b);
+    sprintf(b, "IMEI   	: %s\r\n", mstat.imei);              DBG(b);
+    sprintf(b, "IMSI   	: %s\r\n", mstat.imsi);              DBG(b);
+    sprintf(b, "WH     	: %.3f\r\n", (double)WH);            DBG(b);
+    sprintf(b, "Topic Pub	: %s\r\n", mqtt_topic_pub);          DBG(b);
+    sprintf(b, "Topic Sub 	: %s\r\n", mqtt_topic_sub);          DBG(b);
+    sprintf(b, "Client_Id  	: %s\r\n", client_id);          DBG(b);
+
+
+    DBG("=========================\r\n");
+}
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -325,6 +351,7 @@ int main(void)
 
   /* ── Muat UID dari FRAM & susun topic (setelah I2C/FRAM siap) ────────────── */
   UID_Load();   /* isi device_uid dari FRAM, atau default kalau belum ada */
+  sprintf(client_id, "%s", device_uid);
   sprintf(mqtt_topic_pub, "SIKLON/SMARTPJU/JKT/%s/UPLINK/CCO", device_uid);
   sprintf(mqtt_topic_sub, "SIKLON/SMARTPJU/JKT/%s/DOWNLINK",   device_uid);
 
@@ -355,7 +382,7 @@ int main(void)
    ADE7880_Config();
 
    /* ── Relay awal OFF ─────────────────────────────────────────────────────── */
-   Relay_Set(0);
+   Relay_Set(1);
 
 //   char dbg[64];
 //   HAL_StatusTypeDef st = HAL_I2C_IsDeviceReady(&hi2c1, 0xA0, 3, 100);
@@ -377,6 +404,12 @@ int main(void)
    tWH.WH_S = WH / 3;
    tWH.WH_T = WH / 3;
    setWH(&tWH);
+
+   {
+        char wbuf[64];
+        int wn = sprintf(wbuf, "[WH] restore dari FRAM: %.3f\r\n", (double)WH);
+        HAL_UART_Transmit(&huart1, (uint8_t*)wbuf, wn, 500);
+    }
 
    /* ── Bangun kredensial MQTT dari config.c ───────────────────────────────── */
    MQTT_Config mqtt_cfg = Config_GetMQTT();
@@ -472,8 +505,22 @@ int main(void)
 	      {
 	          HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 
+	          /* Selang waktu nyata sejak baca terakhir (untuk akumulasi energi) */
+	          uint32_t now_tick = HAL_GetTick();
+	          uint32_t elapsed  = now_tick - last_read_tick;
+
+	          /* 1a. Baca sensor → mengisi V/I/PF/Freq/Pow dan menghitung VA */
 	          getElectricValue(&pwr_val);
-	          WH = pwr_val.WH_R + pwr_val.WH_S + pwr_val.WH_T;
+
+	          /* 1b. Akumulasi energi memakai VA terbaru + selang waktu nyata */
+	          updateWh(elapsed);
+
+	          /* 1c. Ambil akumulator terkini & sinkronkan ke struct (untuk payload) */
+	          getWH(&tWH);
+	          pwr_val.WH_R = tWH.WH_R;
+	          pwr_val.WH_S = tWH.WH_S;
+	          pwr_val.WH_T = tWH.WH_T;
+	          WH = tWH.WH_R + tWH.WH_S + tWH.WH_T;
 
 	          /* Deteksi ADE stuck: kalau VRms tidak berubah 10x → re-init */
 	          if (pwr_val.VRms_R == last_pwr_val.VRms_R &&
@@ -501,7 +548,7 @@ int main(void)
 	          last_pwr_val.VRms_T = pwr_val.VRms_T;
 
 	          HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	          last_read_tick = HAL_GetTick();
+	          last_read_tick = now_tick;
 	      }
 
 	      /* ── (2) Publish data ke server tiap send_interval ──────────────────── */
