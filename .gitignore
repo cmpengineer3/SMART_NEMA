@@ -24,6 +24,7 @@
 !SMART_KWH_Ver2/**
 !SMART_NEMA_CKP/**
 !SMART_PJUTS_CKP/**
+!Sett_Param_SRNE/**
 
 # Abaikan folder Debug hasil kompilasi
 MCU_CCO_CKP/Debug/
@@ -36,6 +37,7 @@ SMART_CCO_Ver2/Debug/
 SMART_KWH_Ver2/Debug/
 SMART_NEMA_CKP/Debug/
 SMART_PJUTS_CKP/Debug/
+Sett_Param_SRNE/Debug/
 
 # Tetap izinkan .gitignore
 !.gitignore
