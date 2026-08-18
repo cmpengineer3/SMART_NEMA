@@ -272,39 +272,64 @@ int main(void)
 	       }
 
 	       /* ── Proses pesan downlink (mis. request data on-demand H:"R") ──────── */
-	       if (mqtt_data_ready)
-	       {
-	           if (MQTT_ProcessIncoming(last_topic,   sizeof(last_topic),
-	                                    last_payload, sizeof(last_payload)))
-	           {
-	               UART_ClearBuffer();
+	      	   if (mqtt_data_ready)
+	      	   {
+	      	       if (MQTT_ProcessIncoming(last_topic,   sizeof(last_topic),
+	      	                                last_payload, sizeof(last_payload)))
+	      	       {
+	      	           UART_ClearBuffer();
 
-	               /* Format yang diharapkan: {"CRC":"XXXX","DATA":{...}} */
-	               if (MQTT_VerifyPayloadCRC(last_payload))
-	               {
-	                   char data_obj_in[512];
-	                   if (MQTT_ExtractDataObject(last_payload, data_obj_in,
-	                                              sizeof(data_obj_in)))
-	                   {
-	                       /* Command H:"R" → kirim data sensor sekarang juga */
-	                       if (strstr(data_obj_in, "\"H\":\"R\"") != NULL)
-	                       {
-	                           Read_All_Sensor();
+	      	           /* Dua format payload didukung:
+	      	            *   1) Dengan CRC : {"CRC":"XXXX","DATA":{...}}   → diverifikasi
+	      	            *   2) Tanpa CRC  : {"DATA":{...}}  atau  {...} langsung
+	      	            *      (mis. {"H":"R"} polos) → dipakai apa adanya, TANPA
+	      	            *      pengecekan integritas.                                   */
+	      	           char data_obj_in[512];
+	      	           bool got_data = false;
 
-	                           char data_obj_out[512];
-	                           Build_Sensor_Payload(data_obj_out, sizeof(data_obj_out));
-	                           MQTT_PublishWithCRC(mqtt_topic_pub, data_obj_out, 1, 0);
-	                       }
-	                   }
-	               }
-	           }
-	           else
-	           {
-	               /* Parsing gagal — reset manual */
-	               mqtt_data_ready = false;
-	               UART_ClearBuffer();
-	           }
-	       }
+	      	           if (strstr(last_payload, "\"CRC\":") != NULL)
+	      	           {
+	      	               /* Ada field CRC → wajib valid, kalau salah payload ditolak */
+	      	               if (MQTT_VerifyPayloadCRC(last_payload))
+	      	               {
+	      	                   got_data = MQTT_ExtractDataObject(last_payload, data_obj_in,
+	      	                                                     sizeof(data_obj_in));
+	      	               }
+	      	           }
+	      	           else if (strstr(last_payload, "\"DATA\":") != NULL)
+	      	           {
+	      	               /* Tanpa CRC tapi masih dibungkus "DATA": {...} */
+	      	               got_data = MQTT_ExtractDataObject(last_payload, data_obj_in,
+	      	                                                 sizeof(data_obj_in));
+	      	           }
+	      	           else
+	      	           {
+	      	               /* Payload langsung berupa object command, mis. {"H":"R"} */
+	      	               strncpy(data_obj_in, last_payload, sizeof(data_obj_in) - 1);
+	      	               data_obj_in[sizeof(data_obj_in) - 1] = '\0';
+	      	               got_data = true;
+	      	           }
+
+	      	           if (got_data)
+	      	           {
+	      	               /* Command H:"R" → kirim data sensor sekarang juga */
+	      	               if (strstr(data_obj_in, "\"H\":\"R\"") != NULL)
+	      	               {
+	      	                   Read_All_Sensor();
+
+	      	                   char data_obj_out[512];
+	      	                   Build_Sensor_Payload(data_obj_out, sizeof(data_obj_out));
+	      	                   MQTT_PublishWithCRC(mqtt_topic_pub, data_obj_out, 1, 0);
+	      	               }
+	      	           }
+	      	       }
+	      	       else
+	      	       {
+	      	           /* Parsing gagal — reset manual */
+	      	           mqtt_data_ready = false;
+	      	           UART_ClearBuffer();
+	      	       }
+	      	   }
 
 	       HAL_Delay(10);
 	   }

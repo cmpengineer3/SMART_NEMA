@@ -12,6 +12,7 @@
 !SMART_KWH_Ver2/
 !SMART_NEMA_CKP/
 !SMART_PJUTS_CKP/
+!Sett_Param_SRNE/
 
 # Izinkan isi folder tersebut
 !MCU_CCO_CKP/**

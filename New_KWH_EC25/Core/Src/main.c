@@ -20,6 +20,7 @@
 #include "main.h"
 #include "adc.h"
 #include "i2c.h"
+#include "iwdg.h"
 #include "rtc.h"
 #include "tim.h"
 #include "usart.h"
@@ -347,6 +348,7 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM2_Init();
   MX_I2C1_Init();
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
   /* ── Muat UID dari FRAM & susun topic (setelah I2C/FRAM siap) ────────────── */
