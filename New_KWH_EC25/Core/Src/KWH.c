@@ -8,7 +8,7 @@
 #include "main.h"
 #include "usart.h"
 #include <stdio.h>
-/* #include "gsm.h"  -- dihapus: KWH.c tidak memakai fungsi GSM */
+
 #include "rtc.h"
 #include "powermeter_ade7880.h"
 
@@ -23,21 +23,12 @@ extern float GAIN_VRMSR, GAIN_VRMSS, GAIN_VRMST,
 float P_R,P_S,P_T,VA_R,VA_S,VA_T,VARR,VARS,VART;
 float Wh_R=0, Wh_S=0, Wh_T=0;
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  Akumulasi energi (Wh) dari daya SEMU (VA = V x I).
- *
- *  FIX skala waktu: rumus lama "VA/3600" hanya benar kalau dipanggil tepat
- *  1x per detik. Sekarang memakai selang waktu nyata (elapsed_ms), jadi
- *  benar untuk interval berapa pun:
- *      Wh += VA[watt] * (elapsed_ms / 3.600.000)      (ms → jam)
- * ────────────────────────────────────────────────────────────────────────── */
 void updateWh(uint32_t elapsed_ms)
 {
 	if (elapsed_ms == 0) return;
 
 	float hours = (float)elapsed_ms / 3600000.0f;   /* ms → jam */
 
-	/* Guard: jangan akumulasi nilai negatif (bisa terjadi saat tanpa beban) */
 	if (VA_R > 0.0f) Wh_R += VA_R * hours;
 	if (VA_S > 0.0f) Wh_S += VA_S * hours;
 	if (VA_T > 0.0f) Wh_T += VA_T * hours;
@@ -49,9 +40,7 @@ void getWH(WH_T* pval){
 	pval->WH_T = Wh_T;
 }
 
-/* FIX arah: dulu fungsi ini menyalin internal → pval (identik getWH),
- * sehingga restore WH dari FRAM tidak pernah berefek. Sekarang benar:
- * memuat nilai dari pval → akumulator internal. */
+
 void setWH(WH_T* pval){
 	Wh_R = pval->WH_R;
 	Wh_S = pval->WH_S;
@@ -115,10 +104,6 @@ uint32_t getElectricValue(pwr_value_t* pPwrVal)
 		Irms_T_cal = 0;
 	}
 
-	/* FIX: arus RMS tidak mungkin negatif. Tanpa beban, rumus kalibrasi
-	 * (raw*GAIN + OFFS - 0.16) bisa menghasilkan nilai negatif kecil
-	 * (mis. -0.006 A) yang membuat VA ikut negatif dan WH berkurang.
-	 * Clamp ke 0 supaya akumulasi energi tetap benar. */
 	if(Irms_R_cal < 0) Irms_R_cal = 0;
 	if(Irms_S_cal < 0) Irms_S_cal = 0;
 	if(Irms_T_cal < 0) Irms_T_cal = 0;

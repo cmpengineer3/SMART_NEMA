@@ -1,17 +1,9 @@
-/*
- * modem_check.c — Pengecekan status modem Quectel EC25/EG25 saat startup.
- *
- * Meniru urutan QNavigator. Memakai modul uart.c kamu:
- *   - UART_SendATCommand()  : clear buffer + kirim "cmd\r\n"
- *   - UART_WaitForOK()      : tunggu "OK"
- *   - rxBuffer[]            : dibaca langsung untuk parsing respon
- *
- * Debug print dikirim ke huart1 (sama seperti Debug_Print_Sensor di main.c).
- */
+
 
 #include "modem_check.h"
 #include "uart.h"
-#include "usart.h"       /* huart1 untuk debug print */
+#include "usart.h"
+#include "main.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,12 +25,12 @@ static void snapshot_rx(char *dst, size_t dst_size)
     EXIT_CRITICAL();
 }
 
-/* ── Helper: kirim AT command, tunggu OK, kembalikan salinan respon ───────── */
 static bool at_query(const char *cmd, char *resp, size_t resp_size, uint32_t timeout_ms)
 {
     UART_SendATCommand(cmd);
     bool ok = UART_WaitForOK(timeout_ms);
     if (resp && resp_size) snapshot_rx(resp, resp_size);
+    UART_WatchdogRefresh();
     return ok;
 }
 
@@ -61,8 +53,10 @@ static bool modem_sync(void)
         if (UART_WaitForOK(1000))
         {
             dbg("[MODEM] AT sync OK\r\n");
+            UART_WatchdogRefresh();
             return true;
         }
+        UART_WatchdogRefresh();   /* kick tiap percobaan, bukan cuma tiap 5 detik */
         HAL_Delay(500);
     }
     dbg("[MODEM] AT sync GAGAL\r\n");
@@ -81,9 +75,9 @@ bool Modem_SyncAndCheck(ModemStatus *st)
     if (!modem_sync()) return false;
 
     /* (2) Set format respon (seperti QNavigator) */
-    at_query("ATV1",     resp, sizeof(resp), 1000);   /* verbose response       */
-    at_query("ATE1",     resp, sizeof(resp), 1000);   /* echo ON (biar mirip)   */
-    at_query("AT+CMEE=2",resp, sizeof(resp), 1000);   /* error verbose          */
+    at_query("ATV1",     resp, sizeof(resp), 1000);
+    at_query("ATE1",     resp, sizeof(resp), 1000);
+    at_query("AT+CMEE=2",resp, sizeof(resp), 1000);
 
     /* (3) Baudrate: AT+IPR? */
     if (at_query("AT+IPR?", resp, sizeof(resp), 1000))
@@ -102,7 +96,6 @@ bool Modem_SyncAndCheck(ModemStatus *st)
     /* (5) IMEI: AT+GSN */
     if (at_query("AT+GSN", resp, sizeof(resp), 1000))
     {
-        /* IMEI = 15 digit; cari deretan angka pertama di respon */
         const char *p = resp;
         while (*p && (*p < '0' || *p > '9')) p++;
         int n = 0;
@@ -111,7 +104,7 @@ bool Modem_SyncAndCheck(ModemStatus *st)
         snprintf(line, sizeof(line), "[MODEM] IMEI = %s\r\n", st->imei); dbg(line);
     }
 
-    /* (6) SIM status: AT+CPIN? */
+
     if (at_query("AT+CPIN?", resp, sizeof(resp), 2000))
     {
         if (strstr(resp, "READY") != NULL)
@@ -160,8 +153,6 @@ bool Modem_SyncAndCheck(ModemStatus *st)
         }
     }
 
-    /* (10) Registrasi jaringan: CREG / CGREG / CEREG
-     *      Format: +CREG: <n>,<stat>. stat 1=home, 5=roaming → terdaftar. */
     st->registered = false;
     const char *regcmds[3] = { "AT+CREG?", "AT+CGREG?", "AT+CEREG?" };
     const char *regtok[3]  = { "+CREG:",   "+CGREG:",   "+CEREG:"   };
@@ -212,4 +203,105 @@ bool Modem_FixBaudrate115200(void)
     if (!UART_WaitForOK(1000)) return false;
     UART_SendATCommand("AT&W");                 /* simpan ke NVM */
     return UART_WaitForOK(1000);
+}
+
+
+static void uart3_reinit(uint32_t baud)
+{
+    huart3.Init.BaudRate     = baud;
+    huart3.Init.WordLength   = UART_WORDLENGTH_8B;
+    huart3.Init.StopBits     = UART_STOPBITS_1;
+    huart3.Init.Parity       = UART_PARITY_NONE;
+    huart3.Init.Mode         = UART_MODE_TX_RX;
+    huart3.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
+    huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+    if (HAL_UART_Init(&huart3) != HAL_OK) Error_Handler();
+    HAL_Delay(50);
+    UART_Init_Buffer(&huart3);
+}
+
+/* Coba AT sync <attempts> kali dengan tunggu OK 1 detik per percobaan.
+ * return true kalau ada satu percobaan yang dapat "OK". */
+static bool try_at_sync(int attempts)
+{
+    for (int i = 0; i < attempts; i++)
+    {
+        UART_SendATCommand("AT");
+        if (UART_WaitForOK(1000))
+        {
+            UART_WatchdogRefresh();
+            return true;
+        }
+        UART_WatchdogRefresh();
+        HAL_Delay(300);
+    }
+    return false;
+}
+
+bool Modem_AutoBaudrate(uint32_t target_baud)
+{
+    char line[80];
+
+    dbg("[MODEM] AutoBaud: coba AT sync di baud saat ini...\r\n");
+    if (try_at_sync(3))
+    {
+        snprintf(line, sizeof(line), "[MODEM] AutoBaud: OK di %lu bps (tidak perlu koreksi)\r\n",
+                 (unsigned long)target_baud);
+        dbg(line);
+        return true;
+    }
+
+    uint32_t alt_baud = (target_baud == 9600) ? 115200u : 9600u;
+    snprintf(line, sizeof(line), "[MODEM] AutoBaud: gagal di %lu, coba %lu...\r\n",
+             (unsigned long)target_baud, (unsigned long)alt_baud);
+    dbg(line);
+
+    uart3_reinit(alt_baud);
+    UART_WatchdogRefresh();
+
+    if (!try_at_sync(3))
+    {
+
+        dbg("[MODEM] AutoBaud: gagal di kedua baud (modem tidak merespon)\r\n");
+        uart3_reinit(target_baud);
+        UART_WatchdogRefresh();
+        return false;
+    }
+
+    snprintf(line, sizeof(line), "[MODEM] AutoBaud: sync OK di %lu, set modem ke %lu...\r\n",
+             (unsigned long)alt_baud, (unsigned long)target_baud);
+    dbg(line);
+
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "AT+IPR=%lu", (unsigned long)target_baud);
+    UART_SendATCommand(cmd);
+
+    (void)UART_WaitForOK(1500);
+    UART_WatchdogRefresh();
+
+
+    uart3_reinit(target_baud);
+    HAL_Delay(200);
+    UART_WatchdogRefresh();
+
+
+    if (!try_at_sync(3))
+    {
+        dbg("[MODEM] AutoBaud: verifikasi di baud baru GAGAL — reset & coba lagi\r\n");
+        HAL_Delay(200);
+        NVIC_SystemReset();
+        while (1) {}   /* not reached */
+    }
+
+    UART_SendATCommand("AT&W");
+    (void)UART_WaitForOK(1500);
+    UART_WatchdogRefresh();
+
+    dbg("[MODEM] AutoBaud: baud modem tersimpan permanen di NVM. Reset MCU...\r\n");
+    HAL_Delay(200);
+
+
+    NVIC_SystemReset();
+    while (1) {}
+    return true;
 }

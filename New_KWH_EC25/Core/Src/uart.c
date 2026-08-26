@@ -1,7 +1,7 @@
 #include "uart.h"
-#include "uid_config.h"          /* UID_FeedByte untuk perintah SETUID via huart1 */
+#include "uid_config.h"
 
-extern uint8_t uid_rx_byte;       /* penampung byte RX huart1 (didefinisikan di main.c) */
+extern uint8_t uid_rx_byte;
 
 /* ── Internal state ───────────────────────────────────────────────────────── */
 static UART_HandleTypeDef *s_huart  = NULL;
@@ -160,19 +160,12 @@ static bool buffer_contains(const char *str)
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Watchdog refresh hook                                                      */
-/*                                                                             */
-/*  __weak: default is empty (no-op). Override in main.c if IWDG is used:    */
-/*    void UART_WatchdogRefresh(void) { HAL_IWDG_Refresh(&hiwdg); }           */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 __weak void UART_WatchdogRefresh(void) {}
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Response polling                                                           */
-/*                                                                             */
-/*  UART_WatchdogRefresh() dipanggil setiap 5 detik di dalam semua wait loop. */
-/*  Ini mencegah IWDG reset selama operasi AT yang butuh waktu lama seperti   */
-/*  QMTOPEN (timeout URC bisa 90 detik).                                      */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 /* Interval pemanggilan watchdog di dalam loop polling (ms) */

@@ -132,15 +132,15 @@ static MQTT_StatusTypeDef send_and_wait(const char *cmd,
 
 MQTT_StatusTypeDef MQTT_CheckNetwork(void)
 {
-    /* Sama seperti Test_Modem_MQTT: CFUN=1 memastikan radio stack aktif.
-     * WatchdogRefresh di uart.c mencegah IWDG reset selama tunggu OK. */
     UART_SendATCommand("AT+CFUN=1");
-    if (!UART_WaitForOK(5000)) return MQTT_ERROR;
+    if (!UART_WaitForOK(5000)) { UART_WatchdogRefresh(); return MQTT_ERROR; }
+    UART_WatchdogRefresh();
     HAL_Delay(500);
 
     /* Cek registrasi jaringan */
     UART_SendATCommand("AT+CEREG?");
-    if (!UART_WaitForOK(5000)) return MQTT_ERROR;
+    if (!UART_WaitForOK(5000)) { UART_WatchdogRefresh(); return MQTT_ERROR; }
+    UART_WatchdogRefresh();
 
     ENTER_CRITICAL();
     bool registered = (strstr((const char *)rxBuffer, "+CEREG: 0,1") != NULL ||
@@ -152,7 +152,8 @@ MQTT_StatusTypeDef MQTT_CheckNetwork(void)
 
     /* Cek attachment packet data */
     UART_SendATCommand("AT+CGATT?");
-    if (!UART_WaitForOK(5000)) return MQTT_ERROR;
+    if (!UART_WaitForOK(5000)) { UART_WatchdogRefresh(); return MQTT_ERROR; }
+    UART_WatchdogRefresh();
 
     ENTER_CRITICAL();
     bool attached = (strstr((const char *)rxBuffer, "+CGATT: 1") != NULL);
@@ -161,13 +162,16 @@ MQTT_StatusTypeDef MQTT_CheckNetwork(void)
     if (!attached)
     {
         UART_SendATCommand("AT+CGATT=1");
-        if (!UART_WaitForOK(10000)) return MQTT_ERROR;
+        if (!UART_WaitForOK(10000)) { UART_WatchdogRefresh(); return MQTT_ERROR; }
+        UART_WatchdogRefresh();
         HAL_Delay(2000);
+        UART_WatchdogRefresh();
     }
 
     /* Cek kualitas sinyal */
     UART_SendATCommand("AT+CSQ");
-    if (!UART_WaitForOK(3000)) return MQTT_ERROR;
+    if (!UART_WaitForOK(3000)) { UART_WatchdogRefresh(); return MQTT_ERROR; }
+    UART_WatchdogRefresh();
 
     return MQTT_OK;
 }
@@ -181,10 +185,7 @@ MQTT_StatusTypeDef MQTT_Open(void)
     static char cmd[256];
     snprintf(cmd, sizeof(cmd), "AT+QMTOPEN=0,\"%s\",%d",
              s_cfg.broker_host, s_cfg.broker_port);
-    /* URC timeout 90s — sama seperti Test_Modem_MQTT.
-     * UART_WatchdogRefresh() di uart.c refresh IWDG setiap 5s sehingga
-     * IWDG (~32s) tidak akan fire meskipun menunggu sampai 90s. */
-    return send_and_wait(cmd, "+QMTOPEN: 0,0", 5000, 90000);
+    return send_and_wait(cmd, "+QMTOPEN: 0,0", 5000, 10000);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -203,7 +204,7 @@ MQTT_StatusTypeDef MQTT_Connect(void)
     {
         snprintf(cmd, sizeof(cmd), "AT+QMTCONN=0,\"%s\"", s_cfg.client_id);
     }
-    return send_and_wait(cmd, "+QMTCONN: 0,0,0", 5000, 25000);
+    return send_and_wait(cmd, "+QMTCONN: 0,0,0", 5000, 10000);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -312,11 +313,14 @@ MQTT_StatusTypeDef MQTT_Reconnect(void)
 {
     MQTT_Disconnect();
     HAL_Delay(1000);
+    UART_WatchdogRefresh();
     MQTT_Close();
     HAL_Delay(2000);
+    UART_WatchdogRefresh();
 
     if (MQTT_Open()    != MQTT_OK) return MQTT_ERROR;
     HAL_Delay(500);
+    UART_WatchdogRefresh();
     if (MQTT_Connect() != MQTT_OK) return MQTT_ERROR;
 
     mqtt_disconnected = false;
@@ -387,19 +391,15 @@ bool MQTT_ProcessIncoming(char *topic_out,   size_t topic_size,
     return true;
 }
 
-/* Variabel waktu global (defined di config.c). Di-extern lokal di sini agar
- * mqtt.c tetap tidak perlu include config.h. */
+
 extern int year, month, day, hour, minute, second;
 
 MQTT_StatusTypeDef mqtt_read_time(void)
 {
-    /* AT+QLTS=2 → +QLTS: "YYYY/MM/DD,hh:mm:ss+ZZ,DST"
-     * (network time; butuh registrasi CEREG dulu).                        */
+
     UART_SendATCommand("AT+QLTS=2");
     if (!UART_WaitForOK(3000)) return MQTT_ERROR;
 
-    /* Salin rxBuffer ke lokal dulu — rxBuffer volatile & bisa berubah oleh
-     * ISR di tengah parsing kalau URC lain masuk.                          */
     static char local[RX_BUFFER_SIZE];
     ENTER_CRITICAL();
     strncpy(local, (const char *)rxBuffer, RX_BUFFER_SIZE - 1);

@@ -1,27 +1,9 @@
-/*
- * fram.c — Driver FRAM/EEPROM via I2C (hi2c1) — versi ANTI-HANG
- *
- * Perbaikan dari versi referensi KWH_EC25_V1c:
- *  1. MemAddSize DIPERBAIKI: referensi pakai "64" (TIDAK VALID) → diganti
- *     FRAM_MEMADD_SIZE = 16-BIT. Chip CY15B064J (64Kbit) butuh 2 byte
- *     HAL_I2C_Mem_Read hang saat FRAM_Read_WH().
- *  2. Return value HAL DICEK: kalau read/write gagal, fungsi langsung
- *     keluar (tidak menunggu selamanya) -> program tidak akan stuck.
- *  3. Loop baca WH: j<4 (referensi j<=4 = buffer overflow 1 byte).
- *  4. Bug FRAM_Read_WH lama (return nilai sampah) sudah diperbaiki.
- *
- * Kalau nilai WH yang terbaca ternyata ngaco (chip ternyata 16-bit address),
- * alamat; memakai 8-bit membuat WRITE gagal diam-diam.
- */
-
 #include <stdio.h>
 #include <string.h>
 #include "main.h"
 #include "i2c.h"
 #include "fram.h"
 
-/* Ukuran alamat memori FRAM. Alamat dipakai kecil (0..50) -> cukup 8-bit.
- * Ganti ke I2C_MEMADD_SIZE_16BIT kalau chip 16-bit (FM24CL64/256/V10). */
 #define FRAM_MEMADD_SIZE   I2C_MEMADD_SIZE_16BIT
 
 /* Timeout tiap transaksi I2C (ms) */

@@ -47,74 +47,57 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-static uint32_t last_read_tick    = 0;   /* timer baca ADE7880   */
-static uint32_t last_publish_tick = 0;   /* timer publish MQTT   */
+static uint32_t last_read_tick    = 0;
+static uint32_t last_publish_tick = 0;
 
 static int  retry_count_local = 0;
 static int  total_retry       = 0;
 static char last_topic[128]   = {0};
 static char last_payload[512] = {0};
 
-/* Buffer & struct sensor global (dipakai di loop) */
 static pwr_value_t pwr_val;
 static pwr_value_t last_pwr_val;
 static WH_T        tWH;
 static float       WH = 0.0f;
 static uint16_t    ADEStuck_count = 0;
 
-/* Status relay (DO1). 0 = OFF, 1 = ON. Dikendalikan via downlink H:S. */
 static uint8_t relay_state = 0;
 
-/* Byte penampung RX huart1 (untuk perintah SETUID via debug) */
 uint8_t uid_rx_byte = 0;
 
 static ModemStatus mstat;
 
-/* Versi firmware (untuk field "Ver" di payload) */
-#define FW_VERSION "2026.07.10"
+#define FW_VERSION "2026.08.26"
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  Kontrol relay DO1 (pin PA1 = RELAY_Pin).
- *
- *  POLARITAS active-low (sesuai referensi KWH_EC25_V1c/updatePwmVal):
- *    nilai 1 (ON)  → pin di-RESET (LOW)
- *    nilai 0 (OFF) → pin di-SET  (HIGH)
- *  Kalau modul relay board-mu active-high, tinggal balik SET/RESET di sini.
- * ────────────────────────────────────────────────────────────────────────── */
+void UART_WatchdogRefresh(void)
+{
+    HAL_IWDG_Refresh(&hiwdg);
+}
+
 static void Relay_Set(uint8_t on)
 {
     if (on)
-        HAL_GPIO_WritePin(RELAY_GPIO_Port, RELAY_Pin, GPIO_PIN_RESET);  /* ON  */
+        HAL_GPIO_WritePin(RELAY_GPIO_Port, RELAY_Pin, GPIO_PIN_RESET);
     else
-        HAL_GPIO_WritePin(RELAY_GPIO_Port, RELAY_Pin, GPIO_PIN_SET);    /* OFF */
+        HAL_GPIO_WritePin(RELAY_GPIO_Port, RELAY_Pin, GPIO_PIN_SET);
     relay_state = on ? 1 : 0;
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  Cek apakah DATA object berisi "H":"<c>" — TOLERAN SPASI.
- *  Cocok untuk "H":"S" maupun "H": "S" (server kadang kasih spasi).
- *  return true kalau ketemu.
- * ────────────────────────────────────────────────────────────────────────── */
 static bool has_hcmd(const char *data_obj, char c)
 {
-    const char *p = strstr(data_obj, "\"H\"");   /* cari key "H"        */
+    const char *p = strstr(data_obj, "\"H\"");
     if (p == NULL) return false;
-    p += 3;                                        /* lewati "H"          */
-    while (*p == ' ') p++;                         /* skip spasi          */
+    p += 3;
+    while (*p == ' ') p++;
     if (*p != ':') return false;
-    p++;                                           /* skip ':'            */
-    while (*p == ' ') p++;                         /* skip spasi          */
+    p++;
+    while (*p == ' ') p++;
     if (*p != '\"') return false;
-    p++;                                           /* skip quote pembuka  */
-    return (*p == c);                              /* cocokkan hurufnya   */
+    p++;
+    return (*p == c);
 }
 
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  Build payload JSON data KWH (TANPA enkripsi).
- *  Format DATA object: 9 parameter listrik + PF + FREQ + WH + metadata waktu.
- *  Dipublish via MQTT_PublishWithCRC → {"CRC":"XXXX","DATA":{...}}
- * ────────────────────────────────────────────────────────────────────────── */
 static void Build_KWH_Payload(char *out, size_t out_size, pwr_value_t *pv, float wh)
 {
     snprintf(out, out_size,
@@ -134,10 +117,7 @@ static void Build_KWH_Payload(char *out, size_t out_size, pwr_value_t *pv, float
         (double)pv->Freq_T, (double)wh);
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  Nama hari (Bahasa Indonesia) dari tanggal — algoritma Sakamoto.
- *  return 0=Minggu, 1=Senin, ... 6=Sabtu.
- * ────────────────────────────────────────────────────────────────────────── */
+
 static const char *Nama_Hari(int y, int m, int d)
 {
     static const char *hari[] = {
@@ -150,26 +130,10 @@ static const char *Nama_Hari(int y, int m, int d)
     return hari[idx];
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  Susun payload LENGKAP (format server baru) lalu publish.
- *
- *  Bentuk:
- *  {"CRC":"0xXXXX","DATA":{...},"LU":{...},"Ver":..,"COM":..,"IMSI":..,"IMEI":..}
- *
- *  - CRC (Modbus CRC-16) dihitung dari string DATA object saja, format "0xXXXX".
- *  - VA per fasa = V x I (hitung manual).
- *  - PV per fasa = daya aktif dari ADE7880_getDataPOW() (murni dari ADE).
- *  - W           = total daya aktif (PV_R + PV_S + PV_T).
- *  - Sig (dBm)   = -113 + 2*CSQ  (konversi standar dari +CSQ).
- *  - Temp        = 0 (driver ADE7880 tidak menyediakan pembacaan suhu).
- *  - SEC         = 0 (placeholder — belum ada sumber).
- * ────────────────────────────────────────────────────────────────────────── */
+
 static MQTT_StatusTypeDef Publish_Full_Payload(pwr_value_t *pv, float wh)
 {
-    /* Nilai daya sudah dipisahkan di getElectricValue():
-     *   pv->Pow_R/S/T = daya AKTIF (Watt) murni dari ADE7880
-     *   pv->VA_R/S/T  = daya SEMU  (VA)  = V x I
-     * Jadi di sini tinggal pakai, tidak perlu panggil fungsi ADE lagi. */
+
     float PV_R = pv->Pow_R, PV_S = pv->Pow_S, PV_T = pv->Pow_T;   /* aktif (W)  */
     float VA_R = pv->VA_R,  VA_S = pv->VA_S,  VA_T = pv->VA_T;    /* semu (VA)  */
 
@@ -253,10 +217,7 @@ static void DBG(const char *s)
     HAL_UART_Transmit(&huart1, (uint8_t*)s, strlen(s), 500);
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  Cetak ringkasan status ke huart1 (dipanggil command "STATUS").
- *  Menampilkan: UID, sinyal, status MQTT, IMEI/IMSI, WH.
- * ────────────────────────────────────────────────────────────────────────── */
+
 void Debug_PrintStatus(void)
 {
     char b[96];
@@ -351,8 +312,8 @@ int main(void)
   MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
-  /* ── Muat UID dari FRAM & susun topic (setelah I2C/FRAM siap) ────────────── */
-  UID_Load();   /* isi device_uid dari FRAM, atau default kalau belum ada */
+
+  UID_Load();
   sprintf(client_id, "%s", device_uid);
   sprintf(mqtt_topic_pub, "SIKLON/SMARTPJU/JKT/%s/UPLINK/CCO", device_uid);
   sprintf(mqtt_topic_sub, "SIKLON/SMARTPJU/JKT/%s/DOWNLINK",   device_uid);
@@ -366,12 +327,16 @@ int main(void)
    HAL_GPIO_WritePin(LTE_RST_GPIO_Port, LTE_RST_Pin, GPIO_PIN_SET);
    HAL_GPIO_WritePin(EN3V8_GPIO_Port,   EN3V8_Pin,   GPIO_PIN_SET);
    HAL_GPIO_WritePin(LTE_PWR_GPIO_Port, LTE_PWR_Pin, GPIO_PIN_SET);
-   HAL_Delay(6000);
+   for (int i = 0; i < 10; i++)
+   {
+       HAL_Delay(1000);
+       UART_WatchdogRefresh();
+   }
+
+   Modem_AutoBaudrate(115200);
 
    /* ── Cek status modem (ala QNavigator): sync AT + SIM + sinyal + registrasi ─ */
    Modem_SyncAndCheck(&mstat);
-   /* Kalau mau berhenti sampai modem benar-benar siap:
-    * while (!Modem_SyncAndCheck(&mstat)) HAL_Delay(3000);              */
 
    for (int i = 0; i < 3; i++)
    {
@@ -428,7 +393,7 @@ int main(void)
    UART_WaitForOK(3000);
 
    UART_SendATCommand("AT+QMTDISC=0");
-   HAL_Delay(500);
+   HAL_Delay(2000);
    UART_SendATCommand("AT+QMTCLOSE=0");
    HAL_Delay(2000);
 
@@ -438,7 +403,8 @@ int main(void)
        DBG("[MQTT] QMTOPEN gagal, retry...\r\n");
        MQTT_CheckNetwork();
        UART_SendATCommand("AT+QMTCLOSE=0");
-       HAL_Delay(3000);
+       HAL_Delay(3500);
+       UART_WatchdogRefresh();
        retry_count_local++;
        total_retry++;
 
@@ -461,6 +427,7 @@ int main(void)
        UART_SendATCommand("AT+QMTDISC=0");
        retry_count_local++;
        HAL_Delay(500);
+       UART_WatchdogRefresh();
        if (retry_count_local >= 3) { retry_count_local = 0; goto MQTT_START; }
        total_retry++;
        if (total_retry > 10) { NVIC_SystemReset(); while (1) {} }
@@ -472,6 +439,7 @@ int main(void)
    {
        DBG("[MQTT] Subscribe gagal, retry...\r\n");
        HAL_Delay(500);
+       UART_WatchdogRefresh();
        retry_count_local++;
        if (retry_count_local >= 5) goto MQTT_START;
    }
@@ -500,6 +468,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  UART_WatchdogRefresh();
 	    /* ── (0) Cek perintah SETUID dari debug huart1 ──────────────────────── */
 	  UID_Process();
 	    /* ── (1) Baca ADE7880 tiap read_interval ────────────────────────────── */
@@ -593,30 +562,25 @@ int main(void)
 	              DBG(last_payload);
 	              DBG("\r\n");
 
-	              /* Ekstrak DATA object langsung (TIDAK wajib CRC — server tes
-	               * kirim tanpa field CRC). Kalau server-mu nanti pakai CRC,
-	               * bungkus lagi blok ini dengan if (MQTT_VerifyPayloadCRC(...)). */
 	              char data_obj_in[512];
 	              if (MQTT_ExtractDataObject(last_payload, data_obj_in, sizeof(data_obj_in)))
 	              {
-	                  /* Request data (H:R) → device kirim payload lengkap sekarang */
 	                  if (has_hcmd(data_obj_in, 'R'))
 	                  {
 	                      DBG("[DOWNLINK] H:R -> kirim data sekarang\r\n");
-	                      Publish_Full_Payload(&pwr_val, WH);   /* status di-print di dalam fungsi */
+	                      Publish_Full_Payload(&pwr_val, WH);
 	                  }
-	                  /* Set output (H:S) → kendalikan relay DO1 (0 = OFF, 1 = ON) */
 	                  else if (has_hcmd(data_obj_in, 'S'))
 	                  {
 	                      char *pdo = strstr(data_obj_in, "\"DO1\"");
 	                      if (pdo != NULL)
 	                      {
-	                          pdo = strchr(pdo, ':');          /* ':' pemisah key:value */
+	                          pdo = strchr(pdo, ':');
 	                          if (pdo != NULL)
 	                          {
 	                              pdo++;
-	                              while (*pdo == ' ') pdo++;    /* toleran spasi        */
-	                              int do1 = atoi(pdo);         /* 0 atau 1             */
+	                              while (*pdo == ' ') pdo++;
+	                              int do1 = atoi(pdo);
 	                              Relay_Set(do1 ? 1 : 0);
 
 	                              char m[48];
@@ -624,7 +588,6 @@ int main(void)
 	                                               relay_state ? "ON" : "OFF");
 	                              HAL_UART_Transmit(&huart1, (uint8_t*)m, mn, 500);
 
-	                              /* Balas status relay terkini sebagai konfirmasi */
 	                              char ack[64];
 	                              snprintf(ack, sizeof(ack),
 	                                       "{\"UID\":\"%s\",\"DO1\":%u}", device_uid, (unsigned)relay_state);
@@ -638,7 +601,7 @@ int main(void)
 	                  }
 	              }
 
-	              mqtt_data_ready = false;   /* reset flag setelah diproses */
+	              mqtt_data_ready = false;
 	          }
 	      }
 }

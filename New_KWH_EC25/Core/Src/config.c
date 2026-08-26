@@ -1,15 +1,3 @@
-/*
- * config.c
- *
- *  Konfigurasi broker MQTT + topic + parameter device Smart-KWH.
- *
- *  ⚠️ CATATAN KEAMANAN:
- *  Jangan commit kredensial broker asli (host/username/password) ke repo
- *  publik. Untuk pengetesan, contoh di bawah memakai broker publik HiveMQ
- *  tanpa auth. Ganti ke broker produksi hanya di device, atau simpan di file
- *  terpisah yang di-.gitignore.
- */
-
 #include "config.h"
 #include "uid_config.h"   /* device_uid untuk client_id */
 #include <stdio.h>
@@ -56,8 +44,6 @@ MQTT_Config Config_GetMQTT(void)
 
     cfg.broker_port = broker_port;
 
-    /* client_id MENGIKUTI device_uid (bukan variabel client_id[]).
-     * Config_GetMQTT() dipanggil setelah UID_Load(), jadi device_uid sudah terisi. */
     strncpy(cfg.client_id, device_uid, sizeof(cfg.client_id) - 1);
     cfg.client_id[sizeof(cfg.client_id) - 1] = '\0';
 
@@ -84,6 +70,6 @@ int second = 0;
 
 /* ── Timing ───────────────────────────────────────────────────────────────── */
 uint32_t read_interval = 2000;    /* baca ADE7880 tiap 10 detik   */
-uint32_t send_interval = 30000;    /* publish MQTT tiap 60 detik   */
+uint32_t send_interval = 30000;
 
 int resend_count = 0;
