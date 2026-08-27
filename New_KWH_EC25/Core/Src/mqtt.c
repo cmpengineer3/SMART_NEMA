@@ -1,5 +1,6 @@
 #include "mqtt.h"
 #include "config.h"
+#include "usart.h"       /* huart1 untuk print diagnosis MQTT_Open ke debug */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -178,14 +179,100 @@ MQTT_StatusTypeDef MQTT_CheckNetwork(void)
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  MQTT Open                                                                  */
+/*                                                                             */
+/*  Deteksi hasil biner: kode 0 (sukses) vs kode lain (gagal).                */
+/*  Ketika URC "+QMTOPEN: 0,<code>" sudah masuk buffer dengan digit apapun,   */
+/*  fungsi langsung memutuskan — TIDAK menunggu timeout URC bagi kode 0 saja  */
+/*  seperti implementasi lama (yang menghabiskan 10 detik menunggu URC yang  */
+/*  bentuknya berbeda). Kalau gagal, panggilan MQTT_Close() dilakukan otomatis */
+/*  di dalam sini supaya context 0 di sisi modem bersih sebelum caller retry. */
+/*  Timeout dipersingkat: OK 2 detik + URC 5 detik = max ~7 detik per attempt */
+/*  (dari sebelumnya 5+10 = 15 detik).                                        */
 /* ─────────────────────────────────────────────────────────────────────────── */
+
+/* Cari pola "+QMTOPEN: 0,<digit>" di rxBuffer.
+ * Return:  0..9  = kode hasil (0 = sukses, selain 0 = gagal)
+ *          -99   = pola belum lengkap / belum ada URC
+ * Perlakuan "-1" (kalau modem mengirimnya untuk "failed to open network"):
+ *          diperlakukan sebagai -1 → dianggap gagal (bukan 0). */
+static int qmtopen_peek_code(void)
+{
+    int code = -99;
+    ENTER_CRITICAL();
+    const char *p = strstr((const char *)rxBuffer, "+QMTOPEN: 0,");
+    if (p != NULL) {
+        p += 12;   /* strlen("+QMTOPEN: 0,") */
+        if (*p == '-' && *(p + 1) >= '0' && *(p + 1) <= '9')
+            code = -(*(p + 1) - '0');   /* mis. "-1" */
+        else if (*p >= '0' && *p <= '9')
+            code = *p - '0';
+    }
+    EXIT_CRITICAL();
+    return code;
+}
+
+/* Polling khusus untuk URC QMTOPEN — ikut refresh watchdog & debug poll
+ * seperti wait loop lain. Return kode (0..9 / -1), atau -99 kalau timeout. */
+static int wait_qmtopen_result(uint32_t timeout_ms)
+{
+    uint32_t start    = HAL_GetTick();
+    uint32_t wdg_last = start;
+    while ((HAL_GetTick() - start) < timeout_ms)
+    {
+        int code = qmtopen_peek_code();
+        if (code != -99) return code;
+        if (strstr((const char *)rxBuffer, "ERROR") != NULL) return -98;
+        HAL_Delay(5);
+        UART_DebugPoll();   /* biarkan perintah debug (SETUID dsb) tetap diproses */
+        if ((HAL_GetTick() - wdg_last) >= 5000)
+        {
+            UART_WatchdogRefresh();
+            wdg_last = HAL_GetTick();
+        }
+    }
+    return -99;
+}
 
 MQTT_StatusTypeDef MQTT_Open(void)
 {
     static char cmd[256];
     snprintf(cmd, sizeof(cmd), "AT+QMTOPEN=0,\"%s\",%d",
              s_cfg.broker_host, s_cfg.broker_port);
-    return send_and_wait(cmd, "+QMTOPEN: 0,0", 5000, 10000);
+    UART_SendATCommand(cmd);
+
+    /* Phase 1: tunggu "OK" (parse ack), timeout dipangkas dari 5s ke 2s.
+     * OK parse selalu dijawab modem <100ms di kondisi normal. */
+    if (!UART_WaitForOK(2000))
+    {
+        HAL_UART_Transmit(&huart1,
+            (uint8_t*)"[MQTT] QMTOPEN tidak dapat OK parse\r\n", 38, 500);
+        return MQTT_ERROR;
+    }
+
+    /* Phase 2: tunggu URC hasil koneksi. Timeout 5 detik (dari 10). Deteksi
+     * berhenti begitu digit hasil muncul, kode apapun (tidak tunggu penuh). */
+    int result = wait_qmtopen_result(5000);
+
+    if (result == 0)
+    {
+        /* Sukses. */
+        return MQTT_OK;
+    }
+
+    /* Selain 0 = gagal. Cetak kode aktual ke debug UART untuk diagnosis. */
+    {
+        char msg[64];
+        int n = snprintf(msg, sizeof(msg),
+                         "[MQTT] QMTOPEN gagal, kode=%d — jalankan MQTT_Close\r\n",
+                         result);
+        HAL_UART_Transmit(&huart1, (uint8_t*)msg, (uint16_t)n, 500);
+    }
+
+    /* Cleanup: close context 0 supaya modem melepas identifier/session lama
+     * sebelum caller mencoba QMTOPEN lagi (best-effort, kalau memang tidak
+     * ada context untuk ditutup, modem cuma balas ERROR yang kita abaikan). */
+    (void)MQTT_Close();
+    return MQTT_ERROR;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */

@@ -165,6 +165,19 @@ static bool buffer_contains(const char *str)
 __weak void UART_WatchdogRefresh(void) {}
 
 /* ─────────────────────────────────────────────────────────────────────────── */
+/*  Debug UART poll hook                                                       */
+/*                                                                             */
+/*  Dipanggil setiap iterasi polling di semua wait loop (WaitForOK/URC/       */
+/*  Prompt/OK_Then_URC). Override di main.c untuk memanggil UID_Process()     */
+/*  supaya perintah SETUID/GETUID/STATUS (dan yang akan ditambahkan) TETAP    */
+/*  bisa diproses saat modem sedang di-tunggu — termasuk selama MQTT_Open     */
+/*  yang bisa memakan detik. Byte-nya sendiri sudah selalu masuk ke buffer    */
+/*  lewat ISR huart1; hook ini yang membuat *pemrosesannya* juga tidak macet. */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+__weak void UART_DebugPoll(void) {}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
 /*  Response polling                                                           */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
@@ -180,6 +193,7 @@ bool UART_WaitForOK(uint32_t timeout_ms)
         if (buffer_contains("OK"))    return true;
         if (buffer_contains("ERROR")) return false;
         HAL_Delay(5);
+        UART_DebugPoll();   /* proses perintah debug (SETUID dsb) walau lagi tunggu modem */
         if ((HAL_GetTick() - wdg_last) >= WDG_REFRESH_INTERVAL_MS)
         {
             UART_WatchdogRefresh();
@@ -198,6 +212,7 @@ bool UART_WaitForURC(const char *urc_expected, uint32_t timeout_ms)
         if (buffer_contains(urc_expected)) return true;
         if (buffer_contains("ERROR"))      return false;
         HAL_Delay(5);
+        UART_DebugPoll();   /* proses perintah debug (SETUID dsb) walau lagi tunggu modem */
         if ((HAL_GetTick() - wdg_last) >= WDG_REFRESH_INTERVAL_MS)
         {
             UART_WatchdogRefresh();
@@ -215,6 +230,7 @@ bool UART_WaitForPrompt(const char *prompt, uint32_t timeout_ms)
     {
         if (buffer_contains(prompt)) return true;
         HAL_Delay(5);
+        UART_DebugPoll();   /* proses perintah debug (SETUID dsb) walau lagi tunggu modem */
         if ((HAL_GetTick() - wdg_last) >= WDG_REFRESH_INTERVAL_MS)
         {
             UART_WatchdogRefresh();
@@ -238,6 +254,7 @@ bool UART_WaitFor_OK_Then_URC(const char *urc_expected,
         if (buffer_contains("OK"))    { ok_found = true; break; }
         if (buffer_contains("ERROR")) return false;
         HAL_Delay(5);
+        UART_DebugPoll();   /* proses perintah debug (SETUID dsb) walau lagi tunggu modem */
         if ((HAL_GetTick() - wdg_last) >= WDG_REFRESH_INTERVAL_MS)
         {
             UART_WatchdogRefresh();
@@ -254,6 +271,7 @@ bool UART_WaitFor_OK_Then_URC(const char *urc_expected,
         if (buffer_contains(urc_expected)) return true;
         if (buffer_contains("ERROR"))      return false;
         HAL_Delay(5);
+        UART_DebugPoll();   /* proses perintah debug (SETUID dsb) walau lagi tunggu modem */
         if ((HAL_GetTick() - wdg_last) >= WDG_REFRESH_INTERVAL_MS)
         {
             UART_WatchdogRefresh();

@@ -8,7 +8,7 @@
 
 #define UID_MAXLEN   24
 
-#define UID_DEFAULT  "KWH012501705" // UID BAWAAN
+#define UID_DEFAULT  "KWH012DEMO05" // UID BAWAAN
 
 extern char device_uid[UID_MAXLEN];
 

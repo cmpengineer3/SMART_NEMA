@@ -1,4 +1,3 @@
-
 #ifndef INC_UART_H_
 #define INC_UART_H_
 
@@ -28,6 +27,19 @@ void UART_Init_Buffer(UART_HandleTypeDef *huart);
 
 
 void UART_WatchdogRefresh(void);
+
+/*
+ * Debug UART poll hook — dipanggil setiap iterasi polling di semua wait loop.
+ * Default __weak implementation kosong (no-op). Override di main.c untuk:
+ *
+ *   void UART_DebugPoll(void) { UID_Process(); }
+ *
+ * Ini membuat perintah debug (SETUID/GETUID/STATUS/dsb.) TETAP diproses saat
+ * firmware menunggu respons modem — termasuk selama MQTT_Open yang bisa
+ * memakan beberapa detik. Byte-nya sendiri sudah selalu masuk buffer lewat
+ * ISR huart1; hook ini yang membuat pemrosesannya juga tidak macet.
+ */
+void UART_DebugPoll(void);
 
 /* ── Buffer helpers ───────────────────────────────────────────────────────── */
 void UART_ClearBuffer(void);

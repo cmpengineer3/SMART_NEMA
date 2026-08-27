@@ -50,6 +50,14 @@
 static uint32_t last_read_tick    = 0;
 static uint32_t last_publish_tick = 0;
 
+/* Auto-reconnect state saat mqtt_disconnected true */
+static uint32_t reconnect_next_tick   = 0;      /* HAL_GetTick() minimum untuk attempt berikutnya */
+static uint32_t reconnect_backoff_ms  = 5000;   /* mulai 5 detik, exp backoff sampai max */
+static uint16_t reconnect_fail_count  = 0;
+#define RECONNECT_BACKOFF_MIN_MS  5000U
+#define RECONNECT_BACKOFF_MAX_MS  60000U
+#define RECONNECT_MAX_FAILS       10U           /* setelah ini reset MCU */
+
 static int  retry_count_local = 0;
 static int  total_retry       = 0;
 static char last_topic[128]   = {0};
@@ -67,11 +75,76 @@ uint8_t uid_rx_byte = 0;
 
 static ModemStatus mstat;
 
-#define FW_VERSION "2026.08.26"
+#define FW_VERSION "2026.08.27"
 
 void UART_WatchdogRefresh(void)
 {
     HAL_IWDG_Refresh(&hiwdg);
+}
+
+static void DBG(const char *s);
+
+void UART_DebugPoll(void)
+{
+    UID_Process();
+}
+
+static void handle_mqtt_reconnect(void)
+{
+    if (!mqtt_disconnected) return;
+
+    uint32_t now = HAL_GetTick();
+    if (now < reconnect_next_tick) return;   /* masih dalam backoff */
+
+    DBG("[MQTT] Terputus terdeteksi, coba reconnect...\r\n");
+    UART_WatchdogRefresh();
+
+    if (MQTT_Reconnect() == MQTT_OK)
+    {
+        /* Subscribe ulang topic downlink supaya perintah H:R/H:S masih bisa
+         * masuk. MQTT_Reconnect di mqtt.c tidak otomatis re-subscribe. */
+        if (MQTT_Subscribe(mqtt_topic_sub, 1) == MQTT_OK)
+        {
+            DBG("[MQTT] Reconnect + subscribe OK\r\n");
+            mqtt_disconnected    = false;
+            reconnect_backoff_ms = RECONNECT_BACKOFF_MIN_MS;
+            reconnect_fail_count = 0;
+            reconnect_next_tick  = 0;
+            return;
+        }
+        DBG("[MQTT] Reconnect OK tapi Subscribe gagal, hitung sebagai gagal\r\n");
+    }
+    else
+    {
+        DBG("[MQTT] Reconnect GAGAL\r\n");
+    }
+
+    /* Gagal — naikkan backoff & counter */
+    reconnect_fail_count++;
+    reconnect_backoff_ms *= 2;
+    if (reconnect_backoff_ms > RECONNECT_BACKOFF_MAX_MS)
+        reconnect_backoff_ms = RECONNECT_BACKOFF_MAX_MS;
+    reconnect_next_tick = HAL_GetTick() + reconnect_backoff_ms;
+
+    {
+        char msg[96];
+        int  n = snprintf(msg, sizeof(msg),
+                          "[MQTT] Backoff %lu ms, gagal ke-%u/%u\r\n",
+                          (unsigned long)reconnect_backoff_ms,
+                          (unsigned)reconnect_fail_count,
+                          (unsigned)RECONNECT_MAX_FAILS);
+        HAL_UART_Transmit(&huart1, (uint8_t*)msg, (uint16_t)n, 500);
+    }
+
+    /* Escalate: kalau tetap gagal setelah 10x, reset MCU untuk fresh boot
+     * (termasuk power-cycle modem via sequence boot). */
+    if (reconnect_fail_count >= RECONNECT_MAX_FAILS)
+    {
+        DBG("[MQTT] Reconnect gagal 10x, reset MCU\r\n");
+        HAL_Delay(500);
+        NVIC_SystemReset();
+        while (1) {}
+    }
 }
 
 static void Relay_Set(uint8_t on)
@@ -155,7 +228,7 @@ static MQTT_StatusTypeDef Publish_Full_Payload(pwr_value_t *pv, float wh)
         "\"VAR\":%.2f,\"VAS\":%.2f,\"VAT\":%.2f,"
         "\"WH\":%.3f,\"W\":%.2f,"
         "\"Frek\":%.3f,\"Temp\":%.2f,\"Sig\":%d,"
-        "\"DO1\":%u,\"SEC\":%d}",
+        "\"DO1\":%u,\"DO2\":0,\"DI2\":0,\"SEC\":%d}",
         (double)LATITUDE, (double)LONGITUDE,
         (double)pv->VRms_R, (double)pv->VRms_S, (double)pv->VRms_T,
         (double)pv->IRms_R, (double)pv->IRms_S, (double)pv->IRms_T,
@@ -327,7 +400,7 @@ int main(void)
    HAL_GPIO_WritePin(LTE_RST_GPIO_Port, LTE_RST_Pin, GPIO_PIN_SET);
    HAL_GPIO_WritePin(EN3V8_GPIO_Port,   EN3V8_Pin,   GPIO_PIN_SET);
    HAL_GPIO_WritePin(LTE_PWR_GPIO_Port, LTE_PWR_Pin, GPIO_PIN_SET);
-   for (int i = 0; i < 10; i++)
+   for (int i = 0; i < 15; i++)
    {
        HAL_Delay(1000);
        UART_WatchdogRefresh();
@@ -392,18 +465,21 @@ int main(void)
    UART_SendATCommand("AT+QMTCFG=\"keepalive\",0,3600");
    UART_WaitForOK(3000);
 
-   UART_SendATCommand("AT+QMTDISC=0");
-   HAL_Delay(2000);
-   UART_SendATCommand("AT+QMTCLOSE=0");
-   HAL_Delay(2000);
+   (void)MQTT_Disconnect();
+   (void)MQTT_Close();
+   HAL_Delay(500);
+   UART_WatchdogRefresh();
 
    DBG("[MQTT] Membuka koneksi ke broker...\r\n");
    while (MQTT_Open() != MQTT_OK)
    {
+       /* MQTT_Open sudah otomatis panggil MQTT_Close() internal kalau kode
+        * hasil bukan 0. Jadi di retry loop kita cukup panggil CheckNetwork
+        * (kalau perlu reactivate PDP) + delay singkat + coba lagi.
+        * TIDAK PERLU lagi kirim raw AT+QMTCLOSE + HAL_Delay di sini. */
        DBG("[MQTT] QMTOPEN gagal, retry...\r\n");
        MQTT_CheckNetwork();
-       UART_SendATCommand("AT+QMTCLOSE=0");
-       HAL_Delay(3500);
+       HAL_Delay(1000);           /* beri broker/modem waktu release session */
        UART_WatchdogRefresh();
        retry_count_local++;
        total_retry++;
@@ -424,7 +500,7 @@ int main(void)
    while (MQTT_Connect() != MQTT_OK)
    {
        DBG("[MQTT] QMTCONN gagal, retry...\r\n");
-       UART_SendATCommand("AT+QMTDISC=0");
+       (void)MQTT_Disconnect();   /* proper: tunggu URC +QMTDISC:0,0 */
        retry_count_local++;
        HAL_Delay(500);
        UART_WatchdogRefresh();
@@ -471,6 +547,8 @@ int main(void)
 	  UART_WatchdogRefresh();
 	    /* ── (0) Cek perintah SETUID dari debug huart1 ──────────────────────── */
 	  UID_Process();
+	    /* ── (0b) Auto-reconnect MQTT kalau terdeteksi terputus ─────────────── */
+	  handle_mqtt_reconnect();
 	    /* ── (1) Baca ADE7880 tiap read_interval ────────────────────────────── */
 	  if ((HAL_GetTick() - last_read_tick) >= read_interval)
 	      {
