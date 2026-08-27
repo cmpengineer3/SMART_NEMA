@@ -312,6 +312,107 @@ void Debug_PrintStatus(void)
 
     DBG("=========================\r\n");
 }
+
+void Debug_ResetWH_Full(void)
+{
+    resetWH();                                 /* Wh_R = Wh_S = Wh_T = 0 di RAM */
+    WH = 0.0f;                                 /* variabel total di main.c juga */
+    WattH.m_float = 0.0f;
+    WritemByte_FRAM(addr_energy, WattH.m_bytes);   /* langsung timpa FRAM */
+}
+
+/* Wrapper Relay_Set — karena Relay_Set static. */
+void Debug_SetRelay(uint8_t on)
+{
+    Relay_Set(on);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  Handler perintah DEFERRED — HANYA dipanggil dari superloop main(),
+ *  BUKAN dari wait loop (UART_DebugPoll). Ini "opsi aman" agar perintah
+ *  MQTT/publish tidak merusak rxBuffer transaksi yang sedang menunggu URC.
+ * ══════════════════════════════════════════════════════════════════════════ */
+void Debug_HandleDeferred(void)
+{
+    DbgPendingAction act = dbg_pending;
+    if (act == DBG_ACT_NONE) return;
+    dbg_pending = DBG_ACT_NONE;   /* claim early biar tidak dobel eksekusi */
+
+    switch (act)
+    {
+    case DBG_ACT_PUB_FULL:
+        DBG("[DBG] eksekusi KWH,PUB\r\n");
+        Publish_Full_Payload(&pwr_val, WH);
+        break;
+
+    case DBG_ACT_MQTT_CLOSE:
+        DBG("[DBG] eksekusi MQTT,CLOSE\r\n");
+        if (MQTT_Close() == MQTT_OK) DBG("[DBG] MQTT_Close OK\r\n");
+        else                          DBG("[DBG] MQTT_Close GAGAL\r\n");
+        break;
+
+    case DBG_ACT_MQTT_DSC:
+        DBG("[DBG] eksekusi MQTT,DSC\r\n");
+        if (MQTT_Disconnect() == MQTT_OK) DBG("[DBG] MQTT_Disconnect OK\r\n");
+        else                               DBG("[DBG] MQTT_Disconnect GAGAL\r\n");
+        break;
+
+    case DBG_ACT_MQTT_OPEN:
+    {
+        DBG("[DBG] eksekusi MQTT,OPEN (max 3x retry)\r\n");
+        int i;
+        MQTT_StatusTypeDef st = MQTT_ERROR;
+        for (i = 0; i < 3; i++)
+        {
+            st = MQTT_Open();
+            if (st == MQTT_OK) break;
+            HAL_Delay(1000);
+            UART_WatchdogRefresh();
+        }
+        if (st == MQTT_OK) DBG("[DBG] MQTT_Open OK\r\n");
+        else                DBG("[DBG] MQTT_Open GAGAL setelah 3x retry\r\n");
+        break;
+    }
+
+    case DBG_ACT_MQTT_CONN:
+    {
+        DBG("[DBG] eksekusi MQTT,CONN (max 3x retry)\r\n");
+        int i;
+        MQTT_StatusTypeDef st = MQTT_ERROR;
+        for (i = 0; i < 3; i++)
+        {
+            st = MQTT_Connect();
+            if (st == MQTT_OK) break;
+            HAL_Delay(500);
+            UART_WatchdogRefresh();
+        }
+        if (st == MQTT_OK) DBG("[DBG] MQTT_Connect OK\r\n");
+        else                DBG("[DBG] MQTT_Connect GAGAL setelah 3x retry\r\n");
+        break;
+    }
+
+    case DBG_ACT_MQTT_SUBS:
+    {
+        DBG("[DBG] eksekusi MQTT,SUBS (max 3x retry)\r\n");
+        int i;
+        MQTT_StatusTypeDef st = MQTT_ERROR;
+        for (i = 0; i < 3; i++)
+        {
+            st = MQTT_Subscribe(mqtt_topic_sub, 1);
+            if (st == MQTT_OK) break;
+            HAL_Delay(500);
+            UART_WatchdogRefresh();
+        }
+        if (st == MQTT_OK) DBG("[DBG] MQTT_Subscribe OK\r\n");
+        else                DBG("[DBG] MQTT_Subscribe GAGAL setelah 3x retry\r\n");
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
