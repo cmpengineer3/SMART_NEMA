@@ -13,6 +13,7 @@
 !SMART_NEMA_CKP/
 !SMART_PJUTS_CKP/
 !Sett_Param_SRNE/
+!ADE7880_Test/
 
 # Izinkan isi folder tersebut
 !MCU_CCO_CKP/**
@@ -26,6 +27,7 @@
 !SMART_NEMA_CKP/**
 !SMART_PJUTS_CKP/**
 !Sett_Param_SRNE/**
+!ADE7880_Test/**
 
 # Abaikan folder Debug hasil kompilasi
 MCU_CCO_CKP/Debug/
@@ -39,6 +41,7 @@ SMART_KWH_Ver2/Debug/
 SMART_NEMA_CKP/Debug/
 SMART_PJUTS_CKP/Debug/
 Sett_Param_SRNE/Debug/
+ADE7880_Test/Debug
 
 # Tetap izinkan .gitignore
 !.gitignore
