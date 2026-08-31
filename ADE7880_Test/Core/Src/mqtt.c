@@ -39,6 +39,9 @@ uint16_t Modbus_CRC16(const unsigned char *buf, size_t len)
     return crc;
 }
 
+
+
+
 /* Konversi CRC16 menjadi 4-char hex uppercase (sesuai format dokumentasi) */
 static void crc16_to_hex(uint16_t crc, char out[5])
 {
