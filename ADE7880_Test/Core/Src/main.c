@@ -12,11 +12,17 @@
   *    - Watchdog IWDG Prescaler 256 / Reload 4095 (~26 detik)
   *    - Peta pin ADE7880 identik project asli
   *
-  *  TIDAK ADA: USART3/modem, MQTT, relay.
   *  [STEP 2] I2C1 + FRAM AKTIF.
   *  [STEP 3] RTC + ADC + TIM AKTIF (peripheral saja, tanpa IRQ).
   *  [STEP 2] I2C1 + FRAM AKTIF — WH disimpan persisten.
-  *  Jadi TIDAK ADA interrupt UART3 yang bisa menyela bit-bang SPI.
+  *  [STEP 9] Downlink handler: H:R = kirim data sekarang, H:S = ubah relay.
+  *  [STEP 10] Auto-reconnect MQTT (exponential backoff 5s..60s, adaptasi
+  *            dari New_KWH_EC25) — dipanggil tiap iterasi superloop, aktif
+  *            begitu +QMTSTAT: 0,1/2/3 terdeteksi oleh UART_ProcessURC().
+  *  [SENGAJA DILEWATI] Publish periodik (Tahap 8 di dokumen rencana) TIDAK
+  *            diimplementasikan — sesuai permintaan, publish hanya event-
+  *            driven lewat downlink H:R (dan lewat New_KWH_EC25 acuan,
+  *            publish periodik itu sendiri di-comment-out di sana).
   *
   *  PETA PIN
   *    PB12  ADE7880_CS        PC6  ADE_PM1        PA9   USART1_TX (debug)
@@ -63,6 +69,9 @@
 #include "mqtt.h"
 #include "config.h"
 
+/* [DEBUG CMD] SETUID persistence + perintah KWH,.../MQTT,... */
+#include "uid_config.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -103,6 +112,43 @@ static ModemStatus mstat;
 static int         retry_count_local = 0;
 static int         total_retry       = 0;
 static uint32_t read_count       = 0;
+
+/* [STEP 10 — auto-reconnect] State backoff, identik New_KWH_EC25 main.c.
+ * mqtt_disconnected di-set oleh UART_ProcessURC() saat +QMTSTAT: 0,1/2/3
+ * (broker/network memutus koneksi MQTT). handle_mqtt_reconnect() dipanggil
+ * tiap iterasi superloop; begitu flag itu true dan backoff timer lewat,
+ * dia coba MQTT_Reconnect() lalu subscribe ulang topic downlink (supaya
+ * H:R/H:S dari Tahap 9 tetap bisa masuk setelah reconnect). */
+static uint32_t reconnect_next_tick   = 0;
+static uint32_t reconnect_backoff_ms  = 5000;
+static uint16_t reconnect_fail_count  = 0;
+#define RECONNECT_BACKOFF_MIN_MS  5000U
+#define RECONNECT_BACKOFF_MAX_MS  60000U
+#define RECONNECT_MAX_FAILS       10U    /* setelah ini reset MCU (fresh boot) */
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  [DEBUG CMD] Aksi yang ditunda ke superloop (opsi aman, identik New_KWH)
+ *
+ *  Perintah debug yang menyentuh UART3/MQTT (KWH,PUB dan semua MQTT,...)
+ *  TIDAK boleh dieksekusi langsung dari dalam ProcessCmd(), karena
+ *  ProcessCmd() bisa terpanggil dari dalam wait-loop UART (lewat
+ *  UART_DebugPoll() di uart.c, dipanggil saat sedang menunggu OK/URC AT
+ *  command lain) — mengeksekusi AT command baru di tengah transaksi yang
+ *  sedang berjalan akan merusak rxBuffer. Jadi ProcessCmd() cuma set flag
+ *  dbg_pending; Debug_HandleDeferred() di superloop main() yang benar-benar
+ *  mengeksekusinya, pada konteks yang aman (bukan di tengah wait-loop).
+ * ══════════════════════════════════════════════════════════════════════════ */
+typedef enum {
+    DBG_ACT_NONE = 0,
+    DBG_ACT_PUB_FULL,      /* Publish_Full_Payload(&pwr_val, WH)              */
+    DBG_ACT_MQTT_CLOSE,    /* MQTT_Close()                                    */
+    DBG_ACT_MQTT_DSC,      /* MQTT_Disconnect()                               */
+    DBG_ACT_MQTT_OPEN,     /* while(MQTT_Open()!=OK) max 3x, tanpa reset      */
+    DBG_ACT_MQTT_CONN,     /* while(MQTT_Connect()!=OK) max 3x, tanpa reset   */
+    DBG_ACT_MQTT_SUBS,     /* while(MQTT_Subscribe()!=OK) max 3x, tanpa reset */
+} DbgPendingAction;
+
+static volatile DbgPendingAction dbg_pending = DBG_ACT_NONE;
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  [STEP 1 — 2026-08-28]  Sinkronisasi variabel & format serial dgn New_KWH
@@ -330,6 +376,72 @@ static void Pf(const char *fmt, ...)
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+ *  [STEP 10] Auto-reconnect MQTT — exponential backoff, adaptasi dari
+ *  New_KWH_EC25/Core/Src/main.c (referensi yang sudah terbukti jalan).
+ *
+ *  Dipanggil tiap iterasi superloop. Tidak melakukan apa-apa selama
+ *  mqtt_disconnected == false. Begitu URC +QMTSTAT: 0,1/2/3 terdeteksi
+ *  (oleh UART_ProcessURC() di uart.c), flag itu true dan fungsi ini mulai
+ *  mencoba reconnect dengan jeda yang membesar tiap gagal (5s → 10s → 20s
+ *  → ... → maksimum 60s), supaya tidak membanjiri modem dengan percobaan
+ *  AT command saat jaringan memang sedang bermasalah.
+ *
+ *  PENTING: MQTT_Reconnect() di mqtt.c HANYA membuka+connect ulang, TIDAK
+ *  subscribe ulang. Kalau topic downlink tidak di-subscribe ulang di sini,
+ *  perintah H:R/H:S dari Tahap 9 tidak akan pernah masuk lagi setelah
+ *  reconnect — makanya subscribe ulang eksplisit di bawah.
+ * ══════════════════════════════════════════════════════════════════════════ */
+static void handle_mqtt_reconnect(void)
+{
+    if (!mqtt_disconnected) return;
+
+    uint32_t now = HAL_GetTick();
+    if (now < reconnect_next_tick) return;   /* masih dalam masa backoff */
+
+    P("\r\n[MQTT] Terputus terdeteksi, coba reconnect...\r\n");
+    HAL_IWDG_Refresh(&hiwdg);
+
+    if (MQTT_Reconnect() == MQTT_OK)
+    {
+        if (MQTT_Subscribe(mqtt_topic_sub, 1) == MQTT_OK)
+        {
+            P("[MQTT] Reconnect + subscribe ulang OK\r\n");
+            mqtt_disconnected    = false;
+            reconnect_backoff_ms = RECONNECT_BACKOFF_MIN_MS;
+            reconnect_fail_count = 0;
+            reconnect_next_tick  = 0;
+            return;
+        }
+        P("[MQTT] Reconnect OK tapi Subscribe gagal, dihitung sebagai gagal\r\n");
+    }
+    else
+    {
+        P("[MQTT] Reconnect GAGAL\r\n");
+    }
+
+    /* Gagal → naikkan backoff (dobel tiap kali, dibatasi max) & counter */
+    reconnect_fail_count++;
+    reconnect_backoff_ms *= 2;
+    if (reconnect_backoff_ms > RECONNECT_BACKOFF_MAX_MS)
+        reconnect_backoff_ms = RECONNECT_BACKOFF_MAX_MS;
+    reconnect_next_tick = HAL_GetTick() + reconnect_backoff_ms;
+
+    Pf("[MQTT] Backoff %lu ms, gagal ke-%u/%u\r\n",
+       (unsigned long)reconnect_backoff_ms,
+       (unsigned)reconnect_fail_count, (unsigned)RECONNECT_MAX_FAILS);
+
+    /* Eskalasi: tetap gagal setelah 10x → reset MCU untuk fresh boot
+     * (termasuk power-cycle modem lewat sekuens boot ulang di main()). */
+    if (reconnect_fail_count >= RECONNECT_MAX_FAILS)
+    {
+        P("[MQTT] Reconnect gagal 10x — reset MCU\r\n");
+        HAL_Delay(500);
+        NVIC_SystemReset();
+        while (1) {}
+    }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
  *  Konversi mentah → bernilai (sama persis dengan KWH.c project asli)
  * ══════════════════════════════════════════════════════════════════════════ */
 
@@ -459,6 +571,110 @@ static void DoRead(void)
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+ *  [DEBUG CMD] KWH,STATUS — ringkasan status device
+ * ══════════════════════════════════════════════════════════════════════════ */
+static void Debug_PrintStatus(void)
+{
+    int sig_dbm = (mstat.csq == 99 || mstat.csq == 0) ? 0 : (-113 + 2 * mstat.csq);
+
+    P("\r\n===== STATUS DEVICE =====\r\n");
+    Pf("UID       : %s\r\n", device_uid);
+    Pf("MQTT      : %s\r\n", mqtt_disconnected ? "TERPUTUS" : "TERHUBUNG");
+    Pf("Sinyal    : CSQ=%d (%d dBm)\r\n", mstat.csq, sig_dbm);
+    Pf("IMEI      : %s\r\n", mstat.imei);
+    Pf("IMSI      : %s\r\n", mstat.imsi);
+    Pf("WH        : %.3f\r\n", (double)WH);
+    Pf("Topic Pub : %s\r\n", mqtt_topic_pub);
+    Pf("Topic Sub : %s\r\n", mqtt_topic_sub);
+    Pf("Client_Id : %s\r\n", client_id);
+    Pf("Relay DO1 : %s\r\n", relay_state ? "ON" : "OFF");
+    P("=========================\r\n");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  [DEBUG CMD] Handler perintah DEFERRED — HANYA dipanggil dari superloop
+ *  main(), BUKAN dari wait-loop UART_DebugPoll(). Lihat penjelasan di
+ *  definisi enum DbgPendingAction di atas.
+ * ══════════════════════════════════════════════════════════════════════════ */
+static void Debug_HandleDeferred(void)
+{
+    DbgPendingAction act = dbg_pending;
+    if (act == DBG_ACT_NONE) return;
+    dbg_pending = DBG_ACT_NONE;   /* claim lebih dulu supaya tidak dobel eksekusi */
+
+    switch (act)
+    {
+    case DBG_ACT_PUB_FULL:
+        P("[DBG] eksekusi KWH,PUB\r\n");
+        Publish_Full_Payload(&pwr_val, WH);
+        break;
+
+    case DBG_ACT_MQTT_CLOSE:
+        P("[DBG] eksekusi MQTT,CLOSE\r\n");
+        P(MQTT_Close() == MQTT_OK ? "[DBG] MQTT_Close OK\r\n"
+                                   : "[DBG] MQTT_Close GAGAL\r\n");
+        break;
+
+    case DBG_ACT_MQTT_DSC:
+        P("[DBG] eksekusi MQTT,DSC\r\n");
+        P(MQTT_Disconnect() == MQTT_OK ? "[DBG] MQTT_Disconnect OK\r\n"
+                                        : "[DBG] MQTT_Disconnect GAGAL\r\n");
+        break;
+
+    case DBG_ACT_MQTT_OPEN:
+    {
+        P("[DBG] eksekusi MQTT,OPEN (max 3x retry)\r\n");
+        MQTT_StatusTypeDef st = MQTT_ERROR;
+        for (int i = 0; i < 3; i++)
+        {
+            st = MQTT_Open();
+            if (st == MQTT_OK) break;
+            HAL_Delay(1000);
+            HAL_IWDG_Refresh(&hiwdg);
+        }
+        P(st == MQTT_OK ? "[DBG] MQTT_Open OK\r\n"
+                         : "[DBG] MQTT_Open GAGAL setelah 3x retry\r\n");
+        break;
+    }
+
+    case DBG_ACT_MQTT_CONN:
+    {
+        P("[DBG] eksekusi MQTT,CONN (max 3x retry)\r\n");
+        MQTT_StatusTypeDef st = MQTT_ERROR;
+        for (int i = 0; i < 3; i++)
+        {
+            st = MQTT_Connect();
+            if (st == MQTT_OK) break;
+            HAL_Delay(500);
+            HAL_IWDG_Refresh(&hiwdg);
+        }
+        P(st == MQTT_OK ? "[DBG] MQTT_Connect OK\r\n"
+                         : "[DBG] MQTT_Connect GAGAL setelah 3x retry\r\n");
+        break;
+    }
+
+    case DBG_ACT_MQTT_SUBS:
+    {
+        P("[DBG] eksekusi MQTT,SUBS (max 3x retry)\r\n");
+        MQTT_StatusTypeDef st = MQTT_ERROR;
+        for (int i = 0; i < 3; i++)
+        {
+            st = MQTT_Subscribe(mqtt_topic_sub, 1);
+            if (st == MQTT_OK) break;
+            HAL_Delay(500);
+            HAL_IWDG_Refresh(&hiwdg);
+        }
+        P(st == MQTT_OK ? "[DBG] MQTT_Subscribe OK\r\n"
+                         : "[DBG] MQTT_Subscribe GAGAL setelah 3x retry\r\n");
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
  *  Perintah UART
  * ══════════════════════════════════════════════════════════════════════════ */
 static void ShowHelp(void)
@@ -477,6 +693,20 @@ static void ShowHelp(void)
       "  RESET                   restart MCU\r\n"
       "  WHRST                   reset akumulasi WH (RAM+FRAM)\r\n"
       "  RELAY,0 | RELAY,1       DO1 relay OFF / ON (aktif-HIGH)\r\n"
+      "  --- format KWH,.../MQTT,... (case-insensitive, toleran spasi) ---\r\n"
+      "  SETUID:xxxxxxxxxxxx    set UID device (alfanumerik, maks 23 char)\r\n"
+      "  KWH,GETUID              cetak UID aktif\r\n"
+      "  KWH,STATUS              ringkasan status device\r\n"
+      "  KWH,RSTWH                reset WH ke 0 (RAM + FRAM)\r\n"
+      "  KWH,PUB                  publish payload penuh   [deferred]\r\n"
+      "  KWH,RESTART              restart MCU\r\n"
+      "  KWH,RELAY,0 | KWH,RELAY,1   relay OFF / ON\r\n"
+      "  MQTT,CLOSE               MQTT_Close()            [deferred]\r\n"
+      "  MQTT,DSC                 MQTT_Disconnect()       [deferred]\r\n"
+      "  MQTT,OPEN                MQTT_Open() max 3x      [deferred]\r\n"
+      "  MQTT,CONN                MQTT_Connect() max 3x   [deferred]\r\n"
+      "  MQTT,SUBS                MQTT_Subscribe() max 3x [deferred]\r\n"
+      "  [deferred] = dieksekusi di superloop, bukan langsung saat diketik\r\n"
       "======================================================\r\n");
 }
 
@@ -570,6 +800,23 @@ static void ProcessCmd(void)
         *e = '\0';
     }
 
+    /* [DEBUG CMD] SETUID:xxxxxxxxxxxx — beda format (pakai ':', bukan ',')
+     * jadi dicek di awal, sebelum dispatch berbasis token koma di bawah.
+     * Kalau tidak ada koma, tok[0] berisi seluruh string "SETUID:xxxx". */
+    if (strncmp(tok[0], "SETUID:", 7) == 0) {
+        const char *val = tok[0] + 7;
+        if (UID_Save(val)) {
+            Pf("\r\n[UID] tersimpan: %s\r\n[UID] restart device...\r\n", val);
+            HAL_Delay(200);
+            NVIC_SystemReset();
+        } else {
+            P("\r\n[UID] format salah (hanya A-Z a-z 0-9, 1..23 char) atau gagal simpan ke FRAM\r\n");
+        }
+        cmd_idx = 0;
+        cmd_ready = false;
+        return;
+    }
+
     if      (ieq(tok[0], "HELP"))  ShowHelp();
     else if (ieq(tok[0], "READ"))  DoRead();
     else if (ieq(tok[0], "RAW"))   ShowRaw();
@@ -615,6 +862,78 @@ static void ProcessCmd(void)
         Pf("\r\n[SET] timing setup/hold/inter = %lu / %lu / %lu\r\n",
            (unsigned long)ade_dly_cs_setup, (unsigned long)ade_dly_cs_hold,
            (unsigned long)ade_dly_interframe);
+    }
+    /* [DEBUG CMD] Namespace KWH,... — identik New_KWH_EC25/uid_config.c */
+    else if (ieq(tok[0], "KWH")) {
+        if (nt < 2) {
+            P("\r\n[KWH] butuh subcommand — GETUID|STATUS|RSTWH|PUB|RESTART|RELAY,0|1\r\n");
+        }
+        else if (ieq(tok[1], "GETUID")) {
+            Pf("\r\n[KWH] UID = %s\r\n", device_uid);
+        }
+        else if (ieq(tok[1], "STATUS")) {
+            Debug_PrintStatus();
+        }
+        else if (ieq(tok[1], "RSTWH")) {
+            resetWH();
+            WattH.m_float = 0.0f;
+            WritemByte_FRAM(addr_energy, WattH.m_bytes);
+            P("\r\n[KWH] WH direset ke 0 (RAM + FRAM)\r\n");
+        }
+        else if (ieq(tok[1], "PUB")) {
+            dbg_pending = DBG_ACT_PUB_FULL;
+            P("\r\n[KWH] PUB antre — akan dikirim di superloop\r\n");
+        }
+        else if (ieq(tok[1], "RESTART")) {
+            P("\r\n[KWH] restart device...\r\n");
+            HAL_Delay(200);
+            NVIC_SystemReset();
+        }
+        else if (ieq(tok[1], "RELAY")) {
+            if (nt < 3) {
+                P("\r\n[KWH] RELAY butuh parameter: 0 atau 1\r\n");
+            } else if (tok[2][0] == '0' && tok[2][1] == '\0') {
+                Relay_Set(0); P("\r\n[KWH] RELAY OFF\r\n");
+            } else if (tok[2][0] == '1' && tok[2][1] == '\0') {
+                Relay_Set(1); P("\r\n[KWH] RELAY ON\r\n");
+            } else {
+                P("\r\n[KWH] RELAY parameter harus 0 atau 1\r\n");
+            }
+        }
+        else {
+            P("\r\n[KWH] subcommand tidak dikenali\r\n"
+              "[KWH] daftar: GETUID | STATUS | RSTWH | PUB | RESTART | RELAY,0|1\r\n");
+        }
+    }
+    /* [DEBUG CMD] Namespace MQTT,... — semua deferred (sentuh UART3) */
+    else if (ieq(tok[0], "MQTT")) {
+        if (nt < 2) {
+            P("\r\n[MQTT] butuh subcommand — CLOSE|DSC|OPEN|CONN|SUBS\r\n");
+        }
+        else if (ieq(tok[1], "CLOSE")) {
+            dbg_pending = DBG_ACT_MQTT_CLOSE;
+            P("\r\n[MQTT] CLOSE antre\r\n");
+        }
+        else if (ieq(tok[1], "DSC")) {
+            dbg_pending = DBG_ACT_MQTT_DSC;
+            P("\r\n[MQTT] DSC antre\r\n");
+        }
+        else if (ieq(tok[1], "OPEN")) {
+            dbg_pending = DBG_ACT_MQTT_OPEN;
+            P("\r\n[MQTT] OPEN antre (max 3x retry)\r\n");
+        }
+        else if (ieq(tok[1], "CONN")) {
+            dbg_pending = DBG_ACT_MQTT_CONN;
+            P("\r\n[MQTT] CONN antre (max 3x retry)\r\n");
+        }
+        else if (ieq(tok[1], "SUBS")) {
+            dbg_pending = DBG_ACT_MQTT_SUBS;
+            P("\r\n[MQTT] SUBS antre (max 3x retry)\r\n");
+        }
+        else {
+            P("\r\n[MQTT] subcommand tidak dikenali\r\n"
+              "[MQTT] daftar: CLOSE | DSC | OPEN | CONN | SUBS\r\n");
+        }
     }
     else P("\r\n[ERR] perintah tidak dikenali — ketik HELP\r\n");
 
@@ -674,6 +993,8 @@ int main(void)
     P("#   [STEP 5] USART3+UART4 clocked, IRQn ON              #\r\n");
     P("#   [STEP 6] Modem EC25 ON + AT sync 115200            #\r\n");
     P("#   [STEP 7] MQTT (PJUTS style, URC 90s) ke broker      #\r\n");
+    P("#   [STEP 9] Downlink H:R (kirim data) / H:S (relay)    #\r\n");
+    P("#   [STEP 10] Auto-reconnect MQTT (backoff 5s..60s)     #\r\n");
     P("#   [STEP 3] RTC + ADC + TIM aktif (idle peripheral)   #\r\n");
     P("##########################################################\r\n");
     Pf("  getDataPOW (0xE5xx) default : %s\r\n", ade_en_getPOW ? "ON" : "OFF");
@@ -694,6 +1015,12 @@ int main(void)
     pwr_val.WH_S = Wh_S;
     pwr_val.WH_T = Wh_T;
     Pf("[WH]  restore dari FRAM = %.5f Wh\r\n", (double)WH);
+
+    /* [DEBUG CMD] Restore UID dari FRAM (kalau pernah diset via SETUID) —
+     * HARUS sebelum topic MQTT/CCO disusun dari device_uid di bawah. Kalau
+     * FRAM belum pernah ditulis, device_uid tetap pakai default bawaan. */
+    UID_Load();
+    Pf("[UID] aktif = %s\r\n", device_uid);
 
     /* [STEP 4] Relay awal OFF (aman) */
     Relay_Set(0);
@@ -884,7 +1211,9 @@ MQTT_START:
     {
         HAL_IWDG_Refresh(&hiwdg);
         UART_ProcessURC();          /* [STEP 6] scan URC modem di superloop */
+        handle_mqtt_reconnect();    /* [STEP 10] auto-reconnect kalau mqtt_disconnected */
         ProcessCmd();
+        Debug_HandleDeferred();     /* [DEBUG CMD] eksekusi KWH,PUB / MQTT,... yang di-antre */
 
         if ((HAL_GetTick() - last_read_tick) >= read_interval_ms) {
             last_read_tick = HAL_GetTick();
