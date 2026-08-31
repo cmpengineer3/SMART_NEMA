@@ -12,6 +12,7 @@ volatile bool        mqtt_data_ready  = false;
 volatile uint32_t    mqtt_msg_count   = 0;
 volatile bool        mqtt_disconnected = false;
 volatile bool        urc_line_pending  = false;
+volatile uint32_t    rx_overflow_count = 0;   /* [FIX #1] */
 
 /* Weak default: byte USART1 debug diabaikan. Override di main.c. */
 __weak void UART_OnDebugByte(uint8_t b) { (void)b; }
@@ -78,6 +79,26 @@ void UART_FlushRx(uint32_t wait_ms)
 /* Byte tunggal utk USART1 debug — dipakai di ISR & di-arm ulang tiap byte */
 static uint8_t uart1_dbg_byte;
 
+/* ── [RAWMON] Ring buffer byte mentah huart3 ─────────────────────────────────
+ * Terpisah total dari rxBuffer supaya TIDAK mengganggu parsing AT/MQTT yang
+ * sudah ada. Ditulis di ISR (murah: index + copy byte saja), dikuras dari
+ * superloop lewat UART3_RawMon_Poll(). Ukuran kelipatan 2 → wrap pakai '&'. */
+#define UART3_RAWMON_RING_SIZE   256U   /* HARUS kelipatan 2 */
+#define UART3_RAWMON_RING_MASK   (UART3_RAWMON_RING_SIZE - 1U)
+#define UART3_RAWMON_IDLE_MS     3000U  /* anggap "diam" kalau tak ada byte selama ini */
+
+static volatile uint8_t  uart3_raw_ring[UART3_RAWMON_RING_SIZE];
+static volatile uint16_t uart3_raw_head = 0;   /* ditulis ISR   */
+static volatile uint16_t uart3_raw_tail = 0;   /* ditulis Poll() */
+
+volatile bool     uart3_rawmon_enabled   = false;
+volatile uint32_t uart3_raw_rx_count     = 0;
+volatile uint32_t uart3_raw_dropped      = 0;
+volatile uint32_t uart3_raw_last_rx_tick = 0;
+
+/* true selama periode "diam" sudah dilaporkan, supaya tidak spam tiap poll */
+static bool uart3_raw_idle_reported = false;
+
 /* ISR RINGAN — HANYA memasukkan byte + set flag baris baru.
  *  Empat strstr() yang dulu di dalam ISR sudah dipindah ke UART_ProcessURC()
  *  yang dijalankan dari superloop. Ini yang membuat huart3 aman menerima
@@ -95,17 +116,43 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         return;
     }
 
-    if (rx_index < RX_BUFFER_SIZE - 1)
+    /* [RAWMON] Tap byte huart3 mentah — sebelum/terpisah dari parsing rxBuffer
+     * di bawah. Sangat murah (tak ada strstr/Transmit), aman di ISR. */
+    if (uart3_rawmon_enabled)
     {
-        rxBuffer[rx_index++] = rx_byte;
-        rxBuffer[rx_index]   = '\0';
-        if (rx_byte == '\n') urc_line_pending = true;
+        uint16_t next_head = (uint16_t)((uart3_raw_head + 1U) & UART3_RAWMON_RING_MASK);
+        if (next_head != uart3_raw_tail)
+        {
+            uart3_raw_ring[uart3_raw_head] = rx_byte;
+            uart3_raw_head = next_head;
+        }
+        else
+        {
+            uart3_raw_dropped++;   /* ring RAWMON penuh — TIDAK mempengaruhi rxBuffer di bawah */
+        }
+        uart3_raw_rx_count++;
     }
-    else
+    uart3_raw_last_rx_tick = HAL_GetTick();
+
+    if (rx_index >= RX_BUFFER_SIZE - 1)
     {
-        rx_index    = 0;
-        rxBuffer[0] = '\0';
+        /* [FIX #1] Buffer penuh TANPA newline — sebelumnya di sini seluruh
+         * rxBuffer di-wipe (rx_index=0), jadi kalau lagi di tengah menunggu
+         * OK/URC/payload besar, SEMUA konteks yang sudah masuk ikut hilang.
+         * Sekarang: geser separuh TERAKHIR ke depan, buang separuh TERLAMA
+         * saja — data yang baru saja masuk tetap ada, cuma histori lama yang
+         * hilang. Dipadukan dengan RX_BUFFER_SIZE=1024 supaya kejadian ini
+         * sendiri jadi jarang. */
+        uint16_t shift = RX_BUFFER_SIZE / 2;
+        memmove((void *)rxBuffer, (const void *)&rxBuffer[shift],
+                (size_t)(RX_BUFFER_SIZE - shift));
+        rx_index = (uint16_t)(RX_BUFFER_SIZE - shift);
+        rx_overflow_count++;
     }
+
+    rxBuffer[rx_index++] = rx_byte;
+    rxBuffer[rx_index]   = '\0';
+    if (rx_byte == '\n') urc_line_pending = true;
 
     HAL_UART_Receive_IT(s_huart, &rx_byte, 1);
 }
@@ -321,7 +368,21 @@ bool Extract_Payload(void)
 {
     memset((void *)payload_data, 0, sizeof(payload_data));
 
-    char *start = strstr((const char *)rxBuffer, "\"DATA\":");
+    /* [FIX #2] Sebelumnya fungsi ini memindai rxBuffer volatile LANGSUNG
+     * tanpa critical section, padahal ISR huart3 bisa menulis byte baru +
+     * menggeser rx_index kapan saja di tengah strstr()/strncpy() di bawah —
+     * berisiko baca "robek" (setengah data lama, setengah baru). Sekarang
+     * disalin dulu ke buffer lokal di dalam critical section (pola sama
+     * seperti MQTT_ProcessIncoming()/mqtt_read_time() di mqtt.c), baru semua
+     * parsing jalan di atas salinan yang stabil. */
+    static char local[RX_BUFFER_SIZE];
+    ENTER_CRITICAL();
+    size_t n = strnlen((const char *)rxBuffer, RX_BUFFER_SIZE - 1);
+    memcpy(local, (const char *)rxBuffer, n);
+    EXIT_CRITICAL();
+    local[n] = '\0';
+
+    char *start = strstr(local, "\"DATA\":");
     if (start == NULL) return false;
 
     start += 7;
@@ -351,4 +412,124 @@ bool Extract_Payload(void)
     strncpy((char *)payload_data, start, (size_t)len);
     payload_data[len] = '\0';
     return true;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/*  [RAWMON] Monitor byte mentah UART3 → dicetak ke UART1 debug               */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* [PENTING] RAWMON HARUS selalu keluar lewat huart1 (debug), BUKAN lewat
+ * UART_SendString()/s_huart — s_huart menunjuk ke huart3 (modem)! Kalau
+ * RAWMON ikut memakai UART_SendString(), teks monitor malah terkirim ke
+ * modem, bukan ke terminal debug Anda. Makanya dipakai HAL_UART_Transmit
+ * langsung ke &huart1 di sini, persis seperti P()/Pf() di main.c. */
+static void rawmon_dbg_print(const char *str)
+{
+    HAL_UART_Transmit(&huart1, (uint8_t *)str, (uint16_t)strlen(str), 1000);
+}
+
+void UART3_RawMon_Enable(bool enable)
+{
+    ENTER_CRITICAL();
+    uart3_raw_head       = 0;
+    uart3_raw_tail       = 0;
+    uart3_raw_rx_count   = 0;
+    uart3_raw_dropped    = 0;
+    uart3_rawmon_enabled = enable;
+    uart3_raw_last_rx_tick = HAL_GetTick();
+    EXIT_CRITICAL();
+    uart3_raw_idle_reported = false;
+
+    if (enable)
+        rawmon_dbg_print("\r\n[RAWMON] ON — mencetak byte mentah UART3 ke sini\r\n");
+    else
+        rawmon_dbg_print("\r\n[RAWMON] OFF\r\n");
+}
+
+/* Cetak satu byte dalam bentuk aman-tampil: karakter cetak apa adanya,
+ * '\r'/'\n' diberi penanda supaya baris tidak berantakan, byte lain (termasuk
+ * byte rusak/noise) dicetak sebagai <0xHH> supaya kelihatan jelas itu bukan
+ * teks AT/JSON normal. */
+static void rawmon_put_byte(uint8_t b)
+{
+    char out[8];
+    int  n;
+
+    if (b == '\r') { rawmon_dbg_print("\\r"); return; }
+    if (b == '\n') { rawmon_dbg_print("\\n\r\n"); return; }
+
+    if (b >= 0x20 && b <= 0x7E)
+    {
+        out[0] = (char)b;
+        out[1] = '\0';
+        rawmon_dbg_print(out);
+    }
+    else
+    {
+        n = snprintf(out, sizeof(out), "<%02X>", b);
+        (void)n;
+        rawmon_dbg_print(out);
+    }
+}
+
+void UART3_RawMon_Poll(void)
+{
+    if (!uart3_rawmon_enabled)
+        return;
+
+    /* Kuras ring buffer. Dibatasi per panggilan supaya polling lain
+     * (UART_ProcessURC, ProcessCmd, dst.) di superloop tetap responsif kalau
+     * traffic UART3 sedang deras. */
+    uint16_t drained = 0;
+    while (drained < 128U)
+    {
+        uint16_t tail;
+        uint16_t head;
+        ENTER_CRITICAL();
+        tail = uart3_raw_tail;
+        head = uart3_raw_head;
+        EXIT_CRITICAL();
+
+        if (tail == head) break;   /* ring buffer kosong */
+
+        uint8_t b = uart3_raw_ring[tail];
+        ENTER_CRITICAL();
+        uart3_raw_tail = (uint16_t)((tail + 1U) & UART3_RAWMON_RING_MASK);
+        EXIT_CRITICAL();
+
+        rawmon_put_byte(b);
+        drained++;
+        uart3_raw_idle_reported = false;
+    }
+
+    /* Laporkan kalau ring buffer RAWMON sendiri pernah overflow (bukan
+     * rxBuffer utama) — artinya sebagian byte MENTAH tidak sempat tercetak,
+     * meski byte itu tetap masuk normal ke rxBuffer/parsing modem. */
+    static uint32_t last_reported_drop = 0;
+    uint32_t dropped_now = uart3_raw_dropped;
+    if (dropped_now < last_reported_drop)
+        last_reported_drop = 0;   /* counter direset oleh UART3_RawMon_Enable() */
+    if (dropped_now != last_reported_drop)
+    {
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "\r\n[RAWMON] !! %lu byte tidak sempat dicetak (ring RAWMON penuh)\r\n",
+                 (unsigned long)(dropped_now - last_reported_drop));
+        rawmon_dbg_print(msg);
+        last_reported_drop = dropped_now;
+    }
+
+    /* Laporkan kalau UART3 "diam" — tidak ada byte masuk sama sekali —
+     * supaya kelihatan kalau memang tidak ada data yang masuk (bukan cuma
+     * tidak tercetak). Dilaporkan sekali per periode diam, tidak spam. */
+    uint32_t idle_ms = HAL_GetTick() - uart3_raw_last_rx_tick;
+    if (idle_ms >= UART3_RAWMON_IDLE_MS && !uart3_raw_idle_reported)
+    {
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "\r\n[RAWMON] tidak ada byte masuk dari UART3 selama %lu ms\r\n",
+                 (unsigned long)idle_ms);
+        rawmon_dbg_print(msg);
+        uart3_raw_idle_reported = true;
+    }
 }

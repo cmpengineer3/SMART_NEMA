@@ -7,7 +7,11 @@
 #include <stdio.h>
 
 /* ── Buffer sizes ─────────────────────────────────────────────────────────── */
-#define RX_BUFFER_SIZE      512
+/* [FIX #1] 512 -> 1024: memperkecil peluang rxBuffer penuh sebelum sempat
+ * di-clear (mis. saat payload MQTT besar / beberapa URC menumpuk). Dipadukan
+ * dengan strategi overflow "geser separuh terakhir" (bukan wipe total) di
+ * HAL_UART_RxCpltCallback — lihat uart.c. */
+#define RX_BUFFER_SIZE      1024
 #define PAY_LOAD_SIZE       512
 
 /* ── Critical section helpers ─────────────────────────────────────────────── */
@@ -22,6 +26,7 @@ extern volatile bool        mqtt_disconnected;  /* set by ISR on +QMTSTAT URC  *
 extern volatile bool        mqtt_data_ready;    /* set by ISR on +QMTRECV line  */
 extern volatile uint32_t    mqtt_msg_count;     /* incremented on each +QMTRECV */
 extern volatile bool        urc_line_pending;   /* [STEP6] set di ISR, dibersihkan UART_ProcessURC */
+extern volatile uint32_t    rx_overflow_count;  /* [FIX #1] jumlah kejadian rxBuffer penuh (harusnya jarang/nol) */
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */
 void UART_Init_Buffer(UART_HandleTypeDef *huart);
@@ -76,5 +81,29 @@ bool UART_WaitFor_OK_Then_URC(const char *urc_expected,
 /* ── Payload extraction ───────────────────────────────────────────────────── */
 
 bool Extract_Payload(void);
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/*  [RAWMON] Monitor byte mentah UART3 (modem) → dicetak ke UART1 (debug)     */
+/*                                                                             */
+/*  Tujuan: bisa lihat langsung apa yang benar-benar masuk ke huart3 —        */
+/*  termasuk byte rusak/corrupt — TANPA mengganggu rxBuffer/parsing modem     */
+/*  yang sudah ada. Pakai ring buffer terpisah, diisi di ISR (murah, tanpa    */
+/*  strstr/HAL_UART_Transmit), lalu dikuras & dicetak dari superloop.         */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* Status monitor & statistik — boleh dibaca (read-only) dari luar uart.c */
+extern volatile bool     uart3_rawmon_enabled;
+extern volatile uint32_t uart3_raw_rx_count;   /* total byte huart3 diterima sejak monitor ON */
+extern volatile uint32_t uart3_raw_dropped;    /* byte hilang krn ring buffer RAWMON penuh    */
+extern volatile uint32_t uart3_raw_last_rx_tick; /* HAL_GetTick() byte huart3 terakhir masuk  */
+
+/* Nyala/matikan monitor. Saat dinyalakan, statistik & ring buffer direset. */
+void UART3_RawMon_Enable(bool enable);
+
+/* Panggil sesering mungkin dari context non-ISR: superloop utama, DAN idealnya
+ * juga dari titik-titik yang menunggu lama (mis. delay boot modem), supaya
+ * ring buffer tidak keburu penuh saat traffic UART3 padat. Aman dipanggil
+ * terus-menerus walau monitor sedang OFF (langsung return, murah). */
+void UART3_RawMon_Poll(void);
 
 #endif /* INC_UART_H_ */

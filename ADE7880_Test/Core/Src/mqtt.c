@@ -188,7 +188,7 @@ MQTT_StatusTypeDef MQTT_Open(void)
     /* URC timeout 90s — sama seperti Test_Modem_MQTT.
      * UART_WatchdogRefresh() di uart.c refresh IWDG setiap 5s sehingga
      * IWDG (~32s) tidak akan fire meskipun menunggu sampai 90s. */
-    return send_and_wait(cmd, "+QMTOPEN: 0,0", 5000, 90000);
+    return send_and_wait(cmd, "+QMTOPEN: 0,0", 5000, 15000);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -322,6 +322,8 @@ MQTT_StatusTypeDef MQTT_Reconnect(void)
     if (MQTT_Open()    != MQTT_OK) return MQTT_ERROR;
     HAL_Delay(500);
     if (MQTT_Connect() != MQTT_OK) return MQTT_ERROR;
+    HAL_Delay(500);
+    if (MQTT_Subscribe(mqtt_topic_sub, 1) != MQTT_OK) return MQTT_ERROR;
 
     mqtt_disconnected = false;
     return MQTT_OK;
@@ -343,6 +345,16 @@ bool MQTT_ProcessIncoming(char *topic_out,   size_t topic_size,
     local[RX_BUFFER_SIZE - 1] = '\0';
     mqtt_data_ready = false;
     EXIT_CRITICAL();
+
+    /* [FIX #3] Bersihkan rxBuffer SEKARANG, segera setelah snapshot diambil —
+     * bukan menunggu AT command berikutnya. Sebelumnya teks "+QMTRECV:" yang
+     * sama bisa tetap tertinggal di rxBuffer, lalu ikut ke-scan ulang oleh
+     * UART_ProcessURC() saat baris baru (URC lain / OK dari command lain)
+     * masuk sebelum buffer sempat di-clear — akibatnya mqtt_data_ready &
+     * mqtt_msg_count bisa naik dua kali untuk PESAN YANG SAMA. Parsing di
+     * bawah ini sudah jalan di atas `local` (salinan), jadi aman di-clear
+     * sekarang. */
+    UART_ClearBuffer();
 
     char *p = strstr(local, "+QMTRECV:");
     if (p == NULL) return false;

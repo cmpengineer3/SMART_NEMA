@@ -105,7 +105,7 @@ static uint32_t read_interval_ms = 5000;
 static uint32_t last_read_tick   = 0;
 
 /* [STEP 7] Device UID + globals mirror New_KWH */
-char device_uid[24] = "KWH012501705";
+char device_uid[24] = "KWH0426DEMO0";
 static char        last_topic[128]   = {0};
 static char        last_payload[512] = {0};
 static ModemStatus mstat;
@@ -536,32 +536,32 @@ static void DoRead(void)
     if (fr < F_LO || fr > F_HI)                 bad_F++;
 
     /* ── Cetak ── */
-    Pf("\r\n===== #%lu  t=%lu ms  durasi=%lu ms =====\r\n",
-       (unsigned long)read_count, (unsigned long)HAL_GetTick(), (unsigned long)dt);
+//    Pf("\r\n===== #%lu  t=%lu ms  durasi=%lu ms =====\r\n",
+//       (unsigned long)read_count, (unsigned long)HAL_GetTick(), (unsigned long)dt);
+//
+//    P("-- RAW (langsung dari SPI, sebelum konversi) --\r\n");
+//    Pf("  AVRMS=0x%08lX (%9ld)   AIRMS=0x%08lX (%9ld)\r\n",
+//       (unsigned long)ade_raw_AVRMS, (long)sx24(ade_raw_AVRMS),
+//       (unsigned long)ade_raw_AIRMS, (long)sx24(ade_raw_AIRMS));
+//    Pf("  BVRMS=0x%08lX (%9ld)   BIRMS=0x%08lX (%9ld)\r\n",
+//       (unsigned long)ade_raw_BVRMS, (long)sx24(ade_raw_BVRMS),
+//       (unsigned long)ade_raw_BIRMS, (long)sx24(ade_raw_BIRMS));
+//    Pf("  CVRMS=0x%08lX (%9ld)   CIRMS=0x%08lX (%9ld)\r\n",
+//       (unsigned long)ade_raw_CVRMS, (long)sx24(ade_raw_CVRMS),
+//       (unsigned long)ade_raw_CIRMS, (long)sx24(ade_raw_CIRMS));
+//    Pf("  NIRMS=0x%08lX (%9ld)\r\n",
+//       (unsigned long)ade_raw_NIRMS, (long)sx24(ade_raw_NIRMS));
 
-    P("-- RAW (langsung dari SPI, sebelum konversi) --\r\n");
-    Pf("  AVRMS=0x%08lX (%9ld)   AIRMS=0x%08lX (%9ld)\r\n",
-       (unsigned long)ade_raw_AVRMS, (long)sx24(ade_raw_AVRMS),
-       (unsigned long)ade_raw_AIRMS, (long)sx24(ade_raw_AIRMS));
-    Pf("  BVRMS=0x%08lX (%9ld)   BIRMS=0x%08lX (%9ld)\r\n",
-       (unsigned long)ade_raw_BVRMS, (long)sx24(ade_raw_BVRMS),
-       (unsigned long)ade_raw_BIRMS, (long)sx24(ade_raw_BIRMS));
-    Pf("  CVRMS=0x%08lX (%9ld)   CIRMS=0x%08lX (%9ld)\r\n",
-       (unsigned long)ade_raw_CVRMS, (long)sx24(ade_raw_CVRMS),
-       (unsigned long)ade_raw_CIRMS, (long)sx24(ade_raw_CIRMS));
-    Pf("  NIRMS=0x%08lX (%9ld)\r\n",
-       (unsigned long)ade_raw_NIRMS, (long)sx24(ade_raw_NIRMS));
+//    if (ade_en_getPFf)
+//        Pf("  APF=0x%04X BPF=0x%04X CPF=0x%04X | APER=0x%04X BPER=0x%04X CPER=0x%04X\r\n",
+//           ade_raw_APF, ade_raw_BPF, ade_raw_CPF,
+//           ade_raw_APER, ade_raw_BPER, ade_raw_CPER);
+//    if (ade_en_getPOW)
+//        Pf("  AWATT=0x%08lX BWATT=0x%08lX CWATT=0x%08lX\r\n",
+//           (unsigned long)ade_raw_AWATT, (unsigned long)ade_raw_BWATT,
+//           (unsigned long)ade_raw_CWATT);
 
-    if (ade_en_getPFf)
-        Pf("  APF=0x%04X BPF=0x%04X CPF=0x%04X | APER=0x%04X BPER=0x%04X CPER=0x%04X\r\n",
-           ade_raw_APF, ade_raw_BPF, ade_raw_CPF,
-           ade_raw_APER, ade_raw_BPER, ade_raw_CPER);
-    if (ade_en_getPOW)
-        Pf("  AWATT=0x%08lX BWATT=0x%08lX CWATT=0x%08lX\r\n",
-           (unsigned long)ade_raw_AWATT, (unsigned long)ade_raw_BWATT,
-           (unsigned long)ade_raw_CWATT);
-
-    P("-- HASIL KALIBRASI (format sinkron New_KWH) --\r\n");
+    P("==== HASIL KALIBRASI (format sinkron New_KWH) ====\r\n");
     Debug_Print_Sensor(&pwr_val, WH);
     /* Info tambahan yg tidak ada di format New_KWH — dipertahankan untuk diagnosa */
     Pf("  (N: I=%7.3f | TOTAL P=%.2f W | TOTAL VA=%.2f)\r\n",
@@ -693,6 +693,7 @@ static void ShowHelp(void)
       "  RESET                   restart MCU\r\n"
       "  WHRST                   reset akumulasi WH (RAM+FRAM)\r\n"
       "  RELAY,0 | RELAY,1       DO1 relay OFF / ON (aktif-HIGH)\r\n"
+      "  RAWMON,ON | OFF | STAT  monitor byte mentah UART3 -> UART1 debug\r\n"
       "  --- format KWH,.../MQTT,... (case-insensitive, toleran spasi) ---\r\n"
       "  SETUID:xxxxxxxxxxxx    set UID device (alfanumerik, maks 23 char)\r\n"
       "  KWH,GETUID              cetak UID aktif\r\n"
@@ -731,6 +732,8 @@ static void ShowStat(void)
        (unsigned long)ade_dly_cs_setup, (unsigned long)ade_dly_cs_hold,
        (unsigned long)ade_dly_interframe);
     Pf("  Relay DO1        : %s\r\n", relay_state ? "ON" : "OFF");
+    Pf("  rxBuffer size    : %d byte  (overflow terjadi: %lu x)\r\n",
+       (int)RX_BUFFER_SIZE, (unsigned long)rx_overflow_count);
 }
 
 static void ShowCal(void)
@@ -863,6 +866,32 @@ static void ProcessCmd(void)
            (unsigned long)ade_dly_cs_setup, (unsigned long)ade_dly_cs_hold,
            (unsigned long)ade_dly_interframe);
     }
+    /* [RAWMON] Monitor byte mentah UART3 (modem) → dicetak ke UART1 debug */
+    else if (ieq(tok[0], "RAWMON")) {
+        if (nt < 2) {
+            P("\r\n[RAWMON] butuh subcommand — ON | OFF | STAT\r\n");
+        }
+        else if (ieq(tok[1], "ON")) {
+            UART3_RawMon_Enable(true);
+        }
+        else if (ieq(tok[1], "OFF")) {
+            UART3_RawMon_Enable(false);
+        }
+        else if (ieq(tok[1], "STAT")) {
+            Pf("\r\n[RAWMON] status   : %s\r\n"
+               "[RAWMON] byte masuk: %lu\r\n"
+               "[RAWMON] byte hilang (ring RAWMON penuh): %lu\r\n"
+               "[RAWMON] byte terakhir: %lu ms lalu\r\n",
+               uart3_rawmon_enabled ? "ON" : "OFF",
+               (unsigned long)uart3_raw_rx_count,
+               (unsigned long)uart3_raw_dropped,
+               (unsigned long)(HAL_GetTick() - uart3_raw_last_rx_tick));
+        }
+        else {
+            P("\r\n[RAWMON] subcommand tidak dikenali\r\n"
+              "[RAWMON] daftar: ON | OFF | STAT\r\n");
+        }
+    }
     /* [DEBUG CMD] Namespace KWH,... — identik New_KWH_EC25/uid_config.c */
     else if (ieq(tok[0], "KWH")) {
         if (nt < 2) {
@@ -961,7 +990,7 @@ void UART_OnDebugByte(uint8_t b)
     }
 }
 
-void UART_DebugPoll(void)      { ProcessCmd(); }
+void UART_DebugPoll(void)      { ProcessCmd(); UART3_RawMon_Poll(); }
 void UART_WatchdogRefresh(void){ HAL_IWDG_Refresh(&hiwdg); }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1211,6 +1240,7 @@ MQTT_START:
     {
         HAL_IWDG_Refresh(&hiwdg);
         UART_ProcessURC();          /* [STEP 6] scan URC modem di superloop */
+        UART3_RawMon_Poll();        /* [RAWMON] cetak byte mentah UART3 kalau monitor ON */
         handle_mqtt_reconnect();    /* [STEP 10] auto-reconnect kalau mqtt_disconnected */
         ProcessCmd();
         Debug_HandleDeferred();     /* [DEBUG CMD] eksekusi KWH,PUB / MQTT,... yang di-antre */
