@@ -442,6 +442,43 @@ static void handle_mqtt_reconnect(void)
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+ *  [FIX] Verifikasi ground-truth berkala — pelengkap handle_mqtt_reconnect()
+ *
+ *  handle_mqtt_reconnect() di atas murni REAKTIF: dia cuma bergerak kalau
+ *  mqtt_disconnected sudah true, dan flag itu sendiri cuma berubah kalau
+ *  modem KEBETULAN mengirim URC "+QMTSTAT: 0,x". Kalau koneksi mati tanpa
+ *  URC itu pernah terkirim/tertangkap, mqtt_disconnected tetap false
+ *  SELAMANYA, status debug terus bilang "TERHUBUNG", dan auto-reconnect
+ *  tidak akan pernah terpicu — padahal publish/downlink sudah tidak jalan.
+ *
+ *  Fungsi ini menutup celah itu dengan BERTANYA LANGSUNG ke modem tiap
+ *  MQTT_VERIFY_INTERVAL_MS via AT+QMTCONN? (ground-truth dari sisi modem,
+ *  bukan flag lokal yang bisa telat/kelewatan). Kalau state yang dilaporkan
+ *  BUKAN 3 (connected), mqtt_disconnected di-set true supaya
+ *  handle_mqtt_reconnect() mengambil alih di iterasi berikutnya. ══════════ */
+static uint32_t mqtt_verify_next_tick = 0;
+#define MQTT_VERIFY_INTERVAL_MS  60000U   /* cek ground-truth tiap 60 detik */
+
+static void handle_mqtt_verify(void)
+{
+    if (mqtt_disconnected) return;   /* sudah diketahui putus — biar handle_mqtt_reconnect() yang urus */
+
+    uint32_t now = HAL_GetTick();
+    if (now < mqtt_verify_next_tick) return;
+    mqtt_verify_next_tick = now + MQTT_VERIFY_INTERVAL_MS;
+
+    int state = -1;
+    MQTT_StatusTypeDef st = MQTT_QueryConnState(&state);
+
+    if (st != MQTT_OK || state != 3)
+    {
+        Pf("\r\n[MQTT] Verifikasi AT+QMTCONN? -> state=%d (bukan 3/connected), "
+           "tandai TERPUTUS\r\n", state);
+        mqtt_disconnected = true;
+    }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
  *  Konversi mentah → bernilai (sama persis dengan KWH.c project asli)
  * ══════════════════════════════════════════════════════════════════════════ */
 
@@ -496,9 +533,9 @@ static void DoRead(void)
      * CT bersifat searah — nilai I negatif secara fisik tidak berarti — jadi
      * aman dipangkas ke 0. Sekaligus menghilangkan VA "gaib" (mis. 0,06 saat
      * I sebetulnya nol) karena VA di bawah dihitung dari I yang sudah dipangkas. */
-    if (Irc < 0.0f) Irc = 0.0f;
-    if (Isc < 0.0f) Isc = 0.0f;
-    if (Itc < 0.0f) Itc = 0.0f;
+    if (Irc < 0.001f) Irc = 0.0f;
+    if (Isc < 0.001f) Isc = 0.0f;
+    if (Itc < 0.001f) Itc = 0.0f;
 
     /* ── Daya semu VA = V × I per fasa (dihitung, tidak diambil dari chip) ──
      *
@@ -1242,6 +1279,7 @@ MQTT_START:
         UART_ProcessURC();          /* [STEP 6] scan URC modem di superloop */
         UART3_RawMon_Poll();        /* [RAWMON] cetak byte mentah UART3 kalau monitor ON */
         handle_mqtt_reconnect();    /* [STEP 10] auto-reconnect kalau mqtt_disconnected */
+        handle_mqtt_verify();       /* [FIX] verifikasi ground-truth AT+QMTCONN? tiap 60s */
         ProcessCmd();
         Debug_HandleDeferred();     /* [DEBUG CMD] eksekusi KWH,PUB / MQTT,... yang di-antre */
 

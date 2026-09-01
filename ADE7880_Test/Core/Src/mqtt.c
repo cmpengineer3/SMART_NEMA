@@ -207,7 +207,23 @@ MQTT_StatusTypeDef MQTT_Connect(void)
     {
         snprintf(cmd, sizeof(cmd), "AT+QMTCONN=0,\"%s\"", s_cfg.client_id);
     }
-    return send_and_wait(cmd, "+QMTCONN: 0,0,0", 5000, 25000);
+    MQTT_StatusTypeDef result = send_and_wait(cmd, "+QMTCONN: 0,0,0", 5000, 25000);
+
+    /* [FIX] Sebelumnya HANYA MQTT_Reconnect() yang meng-clear
+     * mqtt_disconnected (dan itupun cuma di ujung, setelah Subscribe juga
+     * sukses). Kalau MQTT_Connect() dipanggil langsung — lewat urutan boot
+     * awal ATAU lewat perintah debug MQTT,CONN — CONNACK sukses (0,0,0)
+     * TIDAK PERNAH tercermin ke flag ini. Akibatnya: user bisa jalankan
+     * MQTT,OPEN lalu MQTT,CONN, dua-duanya balas OK (modem BENAR sudah
+     * connect), tapi mqtt_disconnected tetap nyangkut di nilai lama
+     * (true, kalau sebelumnya sempat ke-set oleh +QMTSTAT) — status debug
+     * salah bilang "TERPUTUS" terus, dan handle_mqtt_reconnect() akan terus
+     * mencoba reconnect ulang di atas koneksi yang sebenarnya sudah hidup.
+     * CONNACK sukses adalah bukti paling langsung "kita terhubung", jadi
+     * flag di-clear persis di titik ini. */
+    if (result == MQTT_OK) mqtt_disconnected = false;
+
+    return result;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -296,6 +312,48 @@ MQTT_StatusTypeDef MQTT_PublishWithCRC(const char *topic,
     if (n < 0 || n >= (int)sizeof(full_payload)) return MQTT_ERROR;
 
     return MQTT_Publish(topic, full_payload, qos, retain);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/*  [FIX] Verifikasi status koneksi aktif (ground-truth), bukan cuma pasif    */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* Selama ini mqtt_disconnected HANYA berubah kalau modem KEBETULAN mengirim
+ * URC "+QMTSTAT: 0,1/2/3". Itu murni reaktif — kalau koneksi mati tanpa
+ * modem sempat mengirim URC itu (mis. socket macet diam-diam / network
+ * black hole tanpa RST yang terdeteksi modem), device tidak akan pernah
+ * tahu, dan status akan terus melaporkan "TERHUBUNG" walau sebenarnya
+ * publish/subscribe sudah gagal semua.
+ *
+ * MQTT_QueryConnState() memberi cara BERTANYA LANGSUNG ke modem lewat
+ * AT+QMTCONN? — ini ground-truth dari sisi modem, bukan tebakan flag lokal.
+ * Balasannya: "+QMTCONN: <client_idx>,<state>" dengan state:
+ *   1 = initializing, 2 = connecting, 3 = connected, 4 = disconnecting.
+ * Dipanggil secara periodik dari superloop (lihat handle_mqtt_verify() di
+ * main.c) untuk menutup celah di atas — bukan pengganti pengecekan URC,
+ * tapi pelengkap supaya ada verifikasi aktif juga. */
+MQTT_StatusTypeDef MQTT_QueryConnState(int *state_out)
+{
+    if (state_out == NULL) return MQTT_ERROR;
+    *state_out = -1;
+
+    UART_SendATCommand("AT+QMTCONN?");
+    if (!UART_WaitForOK(5000)) return MQTT_ERROR;
+
+    char local[128];
+    ENTER_CRITICAL();
+    strncpy(local, (const char *)rxBuffer, sizeof(local) - 1);
+    local[sizeof(local) - 1] = '\0';
+    EXIT_CRITICAL();
+
+    char *p = strstr(local, "+QMTCONN:");
+    if (p == NULL) return MQTT_ERROR;   /* AT+QMTCONN? OK tapi tanpa URC info berarti belum pernah open */
+
+    int client_idx = -1, state = -1;
+    if (sscanf(p, "+QMTCONN: %d,%d", &client_idx, &state) != 2) return MQTT_ERROR;
+
+    *state_out = state;
+    return MQTT_OK;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */

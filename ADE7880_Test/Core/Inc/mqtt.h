@@ -47,6 +47,12 @@ MQTT_StatusTypeDef MQTT_Close(void);
 
 MQTT_StatusTypeDef MQTT_Reconnect(void);
 
+/* [FIX] Verifikasi ground-truth status koneksi via AT+QMTCONN? — lihat
+ * penjelasan lengkap di mqtt.c. state_out: 1=init,2=connecting,3=connected,
+ * 4=disconnecting. Return MQTT_ERROR kalau AT command gagal/format tak
+ * dikenal (state_out di-set -1 pada kasus itu). */
+MQTT_StatusTypeDef MQTT_QueryConnState(int *state_out);
+
 /* ── Publish / Subscribe ──────────────────────────────────────────────────── */
 MQTT_StatusTypeDef MQTT_Subscribe(const char *topic, int qos);
 MQTT_StatusTypeDef MQTT_Publish(const char *topic, const char *payload,

@@ -40,9 +40,45 @@ void UART_Init_Buffer(UART_HandleTypeDef *huart)
 /*  Buffer helpers                                                             */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
+/* ── [FIX] Scan +QMTSTAT SEBELUM rxBuffer di-wipe ─────────────────────────────
+ *
+ * BUG YANG DIPERBAIKI: UART_ProcessURC() (dipanggil sekali per iterasi
+ * superloop) adalah SATU-SATUNYA tempat yang men-scan rxBuffer untuk
+ * "+QMTSTAT: 0,1/2/3" dan set mqtt_disconnected=true. Tapi UART_ClearBuffer()
+ * dipanggil dari BANYAK tempat lain (paling sering: UART_SendATCommand(),
+ * yaitu di AWAL setiap AT command baru) — dan itu bisa terjadi KAPAN SAJA,
+ * termasuk di tengah rangkaian beberapa AT command berturut-turut (mis.
+ * MQTT_Reconnect() yang kirim 5-6 command tanpa pernah balik ke superloop
+ * di antaranya). Kalau modem kebetulan mengirim URC "+QMTSTAT: 0,x" persis
+ * di jendela waktu itu, teksnya masuk ke rxBuffer, TAPI keburu di-wipe oleh
+ * UART_ClearBuffer() dari command berikutnya SEBELUM UART_ProcessURC() di
+ * superloop sempat membacanya. Hasilnya: mqtt_disconnected TIDAK PERNAH
+ * ke-set walau modem sudah memberi tahu koneksi putus — status tetap
+ * tercatat "TERHUBUNG" padahal publish/subscribe sebenarnya sudah gagal.
+ *
+ * PERBAIKAN: setiap kali UART_ClearBuffer() dipanggil, scan dulu isi
+ * rxBuffer untuk "+QMTSTAT: 0,1/2/3" SEBELUM benar-benar di-wipe. Dengan
+ * begitu, URC itu tidak pernah "kabur" lagi — terdeteksi tepat di titik
+ * manapun yang mencoba menghapusnya, bukan hanya lewat jalur periodik
+ * UART_ProcessURC(). (+QMTRECV sengaja TIDAK di-scan di sini — payload-nya
+ * perlu tetap utuh untuk MQTT_ProcessIncoming(), bukan sekadar flag boolean,
+ * jadi tetap ditangani lewat UART_ProcessURC() seperti semula.)         */
+static void scan_qmtstat_before_clear(void)
+{
+    if (rx_index == 0) return;   /* buffer memang sudah kosong */
+
+    if (strstr((const char *)rxBuffer, "+QMTSTAT: 0,1") != NULL ||
+        strstr((const char *)rxBuffer, "+QMTSTAT: 0,2") != NULL ||
+        strstr((const char *)rxBuffer, "+QMTSTAT: 0,3") != NULL)
+    {
+        mqtt_disconnected = true;
+    }
+}
+
 void UART_ClearBuffer(void)
 {
     ENTER_CRITICAL();
+    scan_qmtstat_before_clear();
     memset((void *)rxBuffer, 0, RX_BUFFER_SIZE);
     rx_index = 0;
     EXIT_CRITICAL();
@@ -163,13 +199,25 @@ void UART_ProcessURC(void)
     if (!urc_line_pending) return;
     urc_line_pending = false;
 
-    if (strstr((const char *)rxBuffer, "+QMTRECV:") != NULL) {
+    /* [FIX] Baca rxBuffer di bawah ENTER_CRITICAL — sebelumnya fungsi ini
+     * strstr() langsung ke rxBuffer tanpa lock, padahal ISR huart3 bisa saja
+     * sedang menulis byte baru di saat bersamaan (rxBuffer volatile, ditulis
+     * per-byte). Kecil kemungkinannya menyebabkan crash, tapi tetap bisa
+     * membuat strstr() membaca string yang "setengah jadi" tepat di ujungnya
+     * dan gagal mengenali +QMTSTAT/+QMTRECV pada saat kritis. buffer_contains()
+     * di file ini sudah benar memakai lock — fungsi ini disamakan. */
+    ENTER_CRITICAL();
+    bool got_recv   = (strstr((const char *)rxBuffer, "+QMTRECV:") != NULL);
+    bool disc_1     = (strstr((const char *)rxBuffer, "+QMTSTAT: 0,1") != NULL);
+    bool disc_2     = (strstr((const char *)rxBuffer, "+QMTSTAT: 0,2") != NULL);
+    bool disc_3     = (strstr((const char *)rxBuffer, "+QMTSTAT: 0,3") != NULL);
+    EXIT_CRITICAL();
+
+    if (got_recv) {
         mqtt_msg_count++;
         mqtt_data_ready = true;
     }
-    if (strstr((const char *)rxBuffer, "+QMTSTAT: 0,1") != NULL ||
-        strstr((const char *)rxBuffer, "+QMTSTAT: 0,2") != NULL ||
-        strstr((const char *)rxBuffer, "+QMTSTAT: 0,3") != NULL) {
+    if (disc_1 || disc_2 || disc_3) {
         mqtt_disconnected = true;
     }
 }
