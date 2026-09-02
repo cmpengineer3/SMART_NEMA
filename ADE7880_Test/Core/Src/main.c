@@ -81,6 +81,91 @@
 UART_HandleTypeDef huart1;
 IWDG_HandleTypeDef hiwdg;
 
+/* [DIAGNOSTIK] Berapa kali HSE gagal start sebelum akhirnya sukses (diisi
+ * SystemClock_Config() di bawah; dicetak di banner boot pada main()). */
+volatile uint32_t hse_retry_used = 0;
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  [CHECKPOINT] Penanda "sudah sampai mana" boot terakhir, disimpan di
+ *  BACKUP REGISTER (BKP->DR1/DR2) STM32F1 — bukan di RAM biasa.
+ *
+ *  Kenapa backup register, bukan cuma print biasa: kalau device hang SEBELUM
+ *  UART sempat menyala (skenario awal yang Anda laporkan — nihil serial sama
+ *  sekali), print biasa tidak akan pernah keluar. Tapi begitu device
+ *  ke-reset (oleh IWDG watchdog, atau NVIC_SystemReset() di loop MQTT),
+ *  backup register TETAP terisi checkpoint terakhir sebelum hang tadi —
+ *  karena domain backup punya suplai sendiri (independen dari reset MCU).
+ *  Boot BERIKUTNYA tinggal baca register ini SEBELUM ditimpa, dan cetak
+ *  "checkpoint terakhir sebelum reboot ini" begitu UART sudah siap.
+ *
+ *  CATATAN: ini bertahan lintas software-reset/watchdog-reset (VDD tidak
+ *  pernah benar2 hilang). Kalau listrik BENAR2 diputus total (bukan cuma
+ *  reset) dan board Anda tidak punya baterai/backup cap di pin VBAT, isi
+ *  register ini ikut hilang juga — di kondisi itu checkpoint hanya berguna
+ *  untuk kejadian SETELAHNYA, bukan yang sebelum mati total pertama.
+ * ══════════════════════════════════════════════════════════════════════════ */
+typedef enum {
+    CHK_00_BOOT_START       = 1,
+    CHK_01_IWDG_INIT        = 2,
+    CHK_02_CLOCK_CONFIG     = 3,
+    CHK_03_GPIO_INIT        = 4,
+    CHK_04_UART_INIT        = 5,
+    CHK_05_I2C_INIT         = 6,
+    CHK_06_RTC_INIT         = 7,
+    CHK_07_ADC_TIM_INIT     = 8,
+    CHK_08_ADE_CONFIG_BEGIN = 9,
+    CHK_09_ADE_CONFIG_DONE  = 10,
+    CHK_10_FRAM_RESTORE     = 11,
+    CHK_11_UID_LOAD         = 12,
+    CHK_12_RELAY_INIT       = 13,
+    CHK_13_MODEM_POWERON    = 14,
+    CHK_14_MODEM_AUTOBAUD   = 15,
+    CHK_15_MODEM_SYNC       = 16,
+    CHK_16_ATE0             = 17,
+    CHK_17_MQTT_INIT        = 18,
+    CHK_18_MQTT_OPEN        = 19,
+    CHK_19_MQTT_CONN        = 20,
+    CHK_20_MQTT_SUB         = 21,
+    CHK_21_STEP7_DONE       = 22,
+} BootCheckpoint;
+
+static const char *checkpoint_name(uint16_t id)
+{
+    switch (id) {
+        case CHK_00_BOOT_START:       return "00 boot mulai (HAL_Init selesai)";
+        case CHK_01_IWDG_INIT:        return "01 IWDG diinit";
+        case CHK_02_CLOCK_CONFIG:     return "02 SystemClock_Config selesai";
+        case CHK_03_GPIO_INIT:        return "03 GPIO diinit";
+        case CHK_04_UART_INIT:        return "04 UART1/3/4 diinit";
+        case CHK_05_I2C_INIT:         return "05 I2C1 diinit";
+        case CHK_06_RTC_INIT:         return "06 RTC diinit";
+        case CHK_07_ADC_TIM_INIT:     return "07 ADC1+TIM2 diinit";
+        case CHK_08_ADE_CONFIG_BEGIN: return "08 ADE7880_Config() MULAI (SPI)";
+        case CHK_09_ADE_CONFIG_DONE:  return "09 ADE7880_Config() SELESAI";
+        case CHK_10_FRAM_RESTORE:     return "10 restore WH dari FRAM";
+        case CHK_11_UID_LOAD:         return "11 restore UID dari FRAM";
+        case CHK_12_RELAY_INIT:       return "12 relay awal OFF";
+        case CHK_13_MODEM_POWERON:    return "13 modem EC25 power-on (tunggu 15 detik)";
+        case CHK_14_MODEM_AUTOBAUD:   return "14 Modem_AutoBaudrate() MULAI";
+        case CHK_15_MODEM_SYNC:       return "15 Modem_SyncAndCheck() MULAI";
+        case CHK_16_ATE0:             return "16 kirim ATE0 x3";
+        case CHK_17_MQTT_INIT:        return "17 MQTT_Init() + mulai MQTT_START";
+        case CHK_18_MQTT_OPEN:        return "18 loop QMTOPEN (buka koneksi broker)";
+        case CHK_19_MQTT_CONN:        return "19 loop QMTCONN (connect broker)";
+        case CHK_20_MQTT_SUB:         return "20 loop Subscribe DOWNLINK";
+        case CHK_21_STEP7_DONE:       return "21 STEP7 selesai — masuk superloop normal";
+        default:                      return "(tidak dikenal / belum pernah checkpoint)";
+    }
+}
+
+/* Tulis checkpoint saat ini + hitungan percobaan (dipakai khusus di loop
+ * MQTT supaya kelihatan juga "sudah retry ke berapa" saat macet). */
+static inline void Checkpoint_Set(uint16_t id, uint16_t attempt)
+{
+    BKP->DR1 = id;
+    BKP->DR2 = attempt;
+}
+
 /* [STEP 5 — 2026-08-28] USART3 (modem EC25) + UART4 (header J5) di-init supaya
  * peripheral clock + IRQn AKTIF, tapi HAL_UART_Receive_IT SENGAJA tidak
  * dipanggil → RXNE interrupt enable = 0 → ISR tidak akan fire meski ada
@@ -181,7 +266,7 @@ typedef struct {
  * ══════════════════════════════════════════════════════════════════════════ */
 #define RELAY_ACTIVE_HIGH   1
 
-static uint8_t relay_state = 0;   /* 0 = OFF, 1 = ON */
+static uint8_t relay_state = 1;   /* 0 = OFF, 1 = ON */
 
 //static void Relay_Set(uint8_t on)
 //{
@@ -442,43 +527,6 @@ static void handle_mqtt_reconnect(void)
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
- *  [FIX] Verifikasi ground-truth berkala — pelengkap handle_mqtt_reconnect()
- *
- *  handle_mqtt_reconnect() di atas murni REAKTIF: dia cuma bergerak kalau
- *  mqtt_disconnected sudah true, dan flag itu sendiri cuma berubah kalau
- *  modem KEBETULAN mengirim URC "+QMTSTAT: 0,x". Kalau koneksi mati tanpa
- *  URC itu pernah terkirim/tertangkap, mqtt_disconnected tetap false
- *  SELAMANYA, status debug terus bilang "TERHUBUNG", dan auto-reconnect
- *  tidak akan pernah terpicu — padahal publish/downlink sudah tidak jalan.
- *
- *  Fungsi ini menutup celah itu dengan BERTANYA LANGSUNG ke modem tiap
- *  MQTT_VERIFY_INTERVAL_MS via AT+QMTCONN? (ground-truth dari sisi modem,
- *  bukan flag lokal yang bisa telat/kelewatan). Kalau state yang dilaporkan
- *  BUKAN 3 (connected), mqtt_disconnected di-set true supaya
- *  handle_mqtt_reconnect() mengambil alih di iterasi berikutnya. ══════════ */
-static uint32_t mqtt_verify_next_tick = 0;
-#define MQTT_VERIFY_INTERVAL_MS  60000U   /* cek ground-truth tiap 60 detik */
-
-static void handle_mqtt_verify(void)
-{
-    if (mqtt_disconnected) return;   /* sudah diketahui putus — biar handle_mqtt_reconnect() yang urus */
-
-    uint32_t now = HAL_GetTick();
-    if (now < mqtt_verify_next_tick) return;
-    mqtt_verify_next_tick = now + MQTT_VERIFY_INTERVAL_MS;
-
-    int state = -1;
-    MQTT_StatusTypeDef st = MQTT_QueryConnState(&state);
-
-    if (st != MQTT_OK || state != 3)
-    {
-        Pf("\r\n[MQTT] Verifikasi AT+QMTCONN? -> state=%d (bukan 3/connected), "
-           "tandai TERPUTUS\r\n", state);
-        mqtt_disconnected = true;
-    }
-}
-
-/* ══════════════════════════════════════════════════════════════════════════
  *  Konversi mentah → bernilai (sama persis dengan KWH.c project asli)
  * ══════════════════════════════════════════════════════════════════════════ */
 
@@ -533,9 +581,9 @@ static void DoRead(void)
      * CT bersifat searah — nilai I negatif secara fisik tidak berarti — jadi
      * aman dipangkas ke 0. Sekaligus menghilangkan VA "gaib" (mis. 0,06 saat
      * I sebetulnya nol) karena VA di bawah dihitung dari I yang sudah dipangkas. */
-    if (Irc < 0.001f) Irc = 0.0f;
-    if (Isc < 0.001f) Isc = 0.0f;
-    if (Itc < 0.001f) Itc = 0.0f;
+    if (Irc < 0.0f) Irc = 0.0f;
+    if (Isc < 0.0f) Isc = 0.0f;
+    if (Itc < 0.0f) Itc = 0.0f;
 
     /* ── Daya semu VA = V × I per fasa (dihitung, tidak diambil dari chip) ──
      *
@@ -573,32 +621,32 @@ static void DoRead(void)
     if (fr < F_LO || fr > F_HI)                 bad_F++;
 
     /* ── Cetak ── */
-//    Pf("\r\n===== #%lu  t=%lu ms  durasi=%lu ms =====\r\n",
-//       (unsigned long)read_count, (unsigned long)HAL_GetTick(), (unsigned long)dt);
-//
-//    P("-- RAW (langsung dari SPI, sebelum konversi) --\r\n");
-//    Pf("  AVRMS=0x%08lX (%9ld)   AIRMS=0x%08lX (%9ld)\r\n",
-//       (unsigned long)ade_raw_AVRMS, (long)sx24(ade_raw_AVRMS),
-//       (unsigned long)ade_raw_AIRMS, (long)sx24(ade_raw_AIRMS));
-//    Pf("  BVRMS=0x%08lX (%9ld)   BIRMS=0x%08lX (%9ld)\r\n",
-//       (unsigned long)ade_raw_BVRMS, (long)sx24(ade_raw_BVRMS),
-//       (unsigned long)ade_raw_BIRMS, (long)sx24(ade_raw_BIRMS));
-//    Pf("  CVRMS=0x%08lX (%9ld)   CIRMS=0x%08lX (%9ld)\r\n",
-//       (unsigned long)ade_raw_CVRMS, (long)sx24(ade_raw_CVRMS),
-//       (unsigned long)ade_raw_CIRMS, (long)sx24(ade_raw_CIRMS));
-//    Pf("  NIRMS=0x%08lX (%9ld)\r\n",
-//       (unsigned long)ade_raw_NIRMS, (long)sx24(ade_raw_NIRMS));
+    Pf("\r\n===== #%lu  t=%lu ms  durasi=%lu ms =====\r\n",
+       (unsigned long)read_count, (unsigned long)HAL_GetTick(), (unsigned long)dt);
 
-//    if (ade_en_getPFf)
-//        Pf("  APF=0x%04X BPF=0x%04X CPF=0x%04X | APER=0x%04X BPER=0x%04X CPER=0x%04X\r\n",
-//           ade_raw_APF, ade_raw_BPF, ade_raw_CPF,
-//           ade_raw_APER, ade_raw_BPER, ade_raw_CPER);
-//    if (ade_en_getPOW)
-//        Pf("  AWATT=0x%08lX BWATT=0x%08lX CWATT=0x%08lX\r\n",
-//           (unsigned long)ade_raw_AWATT, (unsigned long)ade_raw_BWATT,
-//           (unsigned long)ade_raw_CWATT);
+    P("-- RAW (langsung dari SPI, sebelum konversi) --\r\n");
+    Pf("  AVRMS=0x%08lX (%9ld)   AIRMS=0x%08lX (%9ld)\r\n",
+       (unsigned long)ade_raw_AVRMS, (long)sx24(ade_raw_AVRMS),
+       (unsigned long)ade_raw_AIRMS, (long)sx24(ade_raw_AIRMS));
+    Pf("  BVRMS=0x%08lX (%9ld)   BIRMS=0x%08lX (%9ld)\r\n",
+       (unsigned long)ade_raw_BVRMS, (long)sx24(ade_raw_BVRMS),
+       (unsigned long)ade_raw_BIRMS, (long)sx24(ade_raw_BIRMS));
+    Pf("  CVRMS=0x%08lX (%9ld)   CIRMS=0x%08lX (%9ld)\r\n",
+       (unsigned long)ade_raw_CVRMS, (long)sx24(ade_raw_CVRMS),
+       (unsigned long)ade_raw_CIRMS, (long)sx24(ade_raw_CIRMS));
+    Pf("  NIRMS=0x%08lX (%9ld)\r\n",
+       (unsigned long)ade_raw_NIRMS, (long)sx24(ade_raw_NIRMS));
 
-    P("==== HASIL KALIBRASI (format sinkron New_KWH) ====\r\n");
+    if (ade_en_getPFf)
+        Pf("  APF=0x%04X BPF=0x%04X CPF=0x%04X | APER=0x%04X BPER=0x%04X CPER=0x%04X\r\n",
+           ade_raw_APF, ade_raw_BPF, ade_raw_CPF,
+           ade_raw_APER, ade_raw_BPER, ade_raw_CPER);
+    if (ade_en_getPOW)
+        Pf("  AWATT=0x%08lX BWATT=0x%08lX CWATT=0x%08lX\r\n",
+           (unsigned long)ade_raw_AWATT, (unsigned long)ade_raw_BWATT,
+           (unsigned long)ade_raw_CWATT);
+
+    P("-- HASIL KALIBRASI (format sinkron New_KWH) --\r\n");
     Debug_Print_Sensor(&pwr_val, WH);
     /* Info tambahan yg tidak ada di format New_KWH — dipertahankan untuk diagnosa */
     Pf("  (N: I=%7.3f | TOTAL P=%.2f W | TOTAL VA=%.2f)\r\n",
@@ -1036,17 +1084,61 @@ void UART_WatchdogRefresh(void){ HAL_IWDG_Refresh(&hiwdg); }
 int main(void)
 {
     HAL_Init();
-    SystemClock_Config();     /* HSE (kristal eksternal) + PLL x9 = 72 MHz */
+
+    /* [CHECKPOINT] Aktifkan akses backup domain SEPALING AWAL mungkin —
+     * sebelum IWDG/clock/apa pun — supaya checkpoint bisa mulai dicatat
+     * dari baris paling pertama boot. Ini operasi yang sama yang biasanya
+     * dilakukan MX_RTC_Init(), cuma dimajukan ke sini karena kita butuh
+     * BKP->DR1/DR2 aktif jauh lebih awal dari RTC itu sendiri. */
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_RCC_BKP_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+
+    /* [CHECKPOINT] Simpan checkpoint boot SEBELUMNYA (sebelum ditimpa) —
+     * ini yang akan dicetak nanti begitu UART siap, sebagai "titik macet
+     * terakhir sebelum reboot ini". */
+    uint16_t prev_checkpoint = (uint16_t)BKP->DR1;
+    uint16_t prev_attempt    = (uint16_t)BKP->DR2;
+
+    Checkpoint_Set(CHK_00_BOOT_START, 0);
+
+    /* [FIX BOOT-HANG] IWDG dipindah ke SEPALING AWAL mungkin — sebelum
+     * SystemClock_Config() dan semua MX_xxx_Init() lain. IWDG jalan di
+     * clock LSI internal yang independen dari HSE/PLL, jadi aman diinit
+     * di sini walau SystemClock_Config() belum jalan sama sekali.
+     *
+     * Kenapa ini penting: sebelumnya IWDG baru aktif di baris paling
+     * akhir (setelah SystemClock_Config + 7 init lain). Kalau salah SATU
+     * dari langkah2 itu gagal (mis. HSE gagal start di cold-boot) dan
+     * masuk Error_Handler() -> while(1){} permanen, watchdog belum
+     * pernah menyala -> device diam total selamanya, harus dicabut-pasang
+     * manual. Dengan IWDG aktif dari baris pertama, kalau itu terjadi
+     * lagi, watchdog akan reset otomatis dalam ~26 detik dan device
+     * reboot lalu coba lagi sendiri — bukan mati permanen. */
+    MX_IWDG_Init();
+    HAL_IWDG_Refresh(&hiwdg);
+    Checkpoint_Set(CHK_01_IWDG_INIT, 0);
+
+    SystemClock_Config();     /* HSE (kristal eksternal) + PLL x9 = 72 MHz, dengan retry — lihat implementasi di bawah */
+    HAL_IWDG_Refresh(&hiwdg);
+    Checkpoint_Set(CHK_02_CLOCK_CONFIG, 0);
 
     MX_GPIO_Init();
+    HAL_IWDG_Refresh(&hiwdg);
+    Checkpoint_Set(CHK_03_GPIO_INIT, 0);
     MX_USART1_UART_Init();
     MX_USART3_UART_Init();    /* [STEP 5] PB10 TX / PB11 RX @115200, IRQn ON, RX BELUM diarm */
     MX_UART4_Init();          /* [STEP 5] PC10 TX / PC11 RX @115200, IRQn ON, RX BELUM diarm */
+    HAL_IWDG_Refresh(&hiwdg);
+    Checkpoint_Set(CHK_04_UART_INIT, 0);
     MX_I2C1_Init();           /* [STEP 2] I2C1 PB6/PB7 → FRAM 0xA0 */
+    Checkpoint_Set(CHK_05_I2C_INIT, 0);
     MX_RTC_Init();            /* [STEP 3] RTC (sumber clock LSI, sudah aktif) */
+    Checkpoint_Set(CHK_06_RTC_INIT, 0);
     MX_ADC1_Init();            /* [STEP 3] ADC1 kanal internal temp sensor    */
     MX_TIM2_Init();            /* [STEP 3] TIM2 base 1 kHz — belum di-Start   */
-    MX_IWDG_Init();           /* ~26 detik */
+    Checkpoint_Set(CHK_07_ADC_TIM_INIT, 0);
+    HAL_IWDG_Refresh(&hiwdg);
 
     UART_StartDebugRx();
 
@@ -1064,11 +1156,33 @@ int main(void)
     P("#   [STEP 3] RTC + ADC + TIM aktif (idle peripheral)   #\r\n");
     P("##########################################################\r\n");
     Pf("  getDataPOW (0xE5xx) default : %s\r\n", ade_en_getPOW ? "ON" : "OFF");
+    if (hse_retry_used > 0)
+        Pf("  [CLK] !! HSE butuh %lu x retry sebelum berhasil start (cold-boot lambat)\r\n",
+           (unsigned long)hse_retry_used);
+    else
+        P("  [CLK] HSE start normal (percobaan pertama sukses)\r\n");
     P("  Ketik HELP lalu Enter untuk daftar perintah.\r\n\r\n");
 
+    /* [CHECKPOINT] Tampilkan checkpoint TERAKHIR sebelum boot ini — kalau
+     * ini bukan CHK_21 (STEP7 selesai / operasi normal), berarti boot
+     * sebelumnya BERHENTI di tengah jalan (hang lalu di-reset watchdog/
+     * NVIC_SystemReset, atau memang baru pertama kali power-on/reflash). */
+    if (prev_checkpoint == 0) {
+        P("[CHECKPOINT] tidak ada riwayat boot sebelumnya (baru pertama power-on / reflash dgn backup domain kosong)\r\n\r\n");
+    } else {
+        Pf("[CHECKPOINT] checkpoint TERAKHIR sebelum boot ini: %s", checkpoint_name(prev_checkpoint));
+        if (prev_attempt > 0) Pf("  (percobaan ke-%u)", (unsigned)prev_attempt);
+        P("\r\n");
+        if (prev_checkpoint != (uint16_t)CHK_21_STEP7_DONE)
+            P("[CHECKPOINT] !! boot sebelumnya TIDAK sampai selesai — kemungkinan macet di titik itu\r\n");
+        P("\r\n");
+    }
+
     HAL_IWDG_Refresh(&hiwdg);
+    Checkpoint_Set(CHK_08_ADE_CONFIG_BEGIN, 0);
     P("[CFG] inisialisasi ADE7880...\r\n");
     ADE7880_Config();
+    Checkpoint_Set(CHK_09_ADE_CONFIG_DONE, 0);
     HAL_IWDG_Refresh(&hiwdg);
 
     /* ── [STEP 2] Restore WH dari FRAM (persisten antar-reset) ─────────── */
@@ -1081,16 +1195,19 @@ int main(void)
     pwr_val.WH_S = Wh_S;
     pwr_val.WH_T = Wh_T;
     Pf("[WH]  restore dari FRAM = %.5f Wh\r\n", (double)WH);
+    Checkpoint_Set(CHK_10_FRAM_RESTORE, 0);
 
     /* [DEBUG CMD] Restore UID dari FRAM (kalau pernah diset via SETUID) —
      * HARUS sebelum topic MQTT/CCO disusun dari device_uid di bawah. Kalau
      * FRAM belum pernah ditulis, device_uid tetap pakai default bawaan. */
     UID_Load();
     Pf("[UID] aktif = %s\r\n", device_uid);
+    Checkpoint_Set(CHK_11_UID_LOAD, 0);
 
     /* [STEP 4] Relay awal OFF (aman) */
     Relay_Set(0);
     P("[REL] relay awal = OFF\r\n");
+    Checkpoint_Set(CHK_12_RELAY_INIT, 0);
 
     /* ══════════════════════════════════════════════════════════════════════
      *  [STEP 6] Aktifkan RX huart3 + power-on modem EC25 + AT sync
@@ -1107,6 +1224,7 @@ int main(void)
      *  apakah bacaan ADE tetap bersih?
      * ══════════════════════════════════════════════════════════════════════ */
     P("\r\n[STEP 6] mengaktifkan modem EC25...\r\n");
+    Checkpoint_Set(CHK_13_MODEM_POWERON, 0);
     UART_Init_Buffer(&huart3);      /* arm huart3 RX-IT */
 
     HAL_GPIO_WritePin(LTE_RST_GPIO_Port, LTE_RST_Pin, GPIO_PIN_SET);
@@ -1119,9 +1237,11 @@ int main(void)
         HAL_IWDG_Refresh(&hiwdg);
     }
 
+    Checkpoint_Set(CHK_14_MODEM_AUTOBAUD, 0);
     Modem_AutoBaudrate(115200);
     HAL_IWDG_Refresh(&hiwdg);
     P("[STEP 6] modem hidup — lanjut ke sekuens MQTT\r\n");
+
 
     /* ══════════════════════════════════════════════════════════════════════
      *  [STEP 7 — PJUTS style]
@@ -1153,9 +1273,11 @@ int main(void)
      *       (bukan MQTT_Close() function yang fast-fail).
      */
     P("[MODEM] Sync & network check...\r\n");
+    Checkpoint_Set(CHK_15_MODEM_SYNC, 0);
     Modem_SyncAndCheck(&mstat);
     HAL_IWDG_Refresh(&hiwdg);
 
+    Checkpoint_Set(CHK_16_ATE0, 0);
     for (int i = 0; i < 3; i++)
     {
         UART_SendATCommand("ATE0");
@@ -1171,6 +1293,7 @@ int main(void)
     MQTT_Config mqtt_cfg = Config_GetMQTT();
     MQTT_Init(&mqtt_cfg);
     P("[MQTT] init OK\r\n");
+    Checkpoint_Set(CHK_17_MQTT_INIT, 0);
     HAL_IWDG_Refresh(&hiwdg);
 
 MQTT_START:
@@ -1202,6 +1325,7 @@ MQTT_START:
         HAL_IWDG_Refresh(&hiwdg);
         retry_count_local++;
         total_retry++;
+        Checkpoint_Set(CHK_18_MQTT_OPEN, (uint16_t)total_retry);   /* [CHECKPOINT] kalau macet lama, boot berikutnya kelihatan berhenti di sini + sudah retry ke berapa */
 
         if (total_retry >= 10)
         {
@@ -1228,6 +1352,7 @@ MQTT_START:
         retry_count_local++;
         HAL_Delay(500);
         HAL_IWDG_Refresh(&hiwdg);
+        Checkpoint_Set(CHK_19_MQTT_CONN, (uint16_t)retry_count_local);
         if (retry_count_local >= 3)
         {
             retry_count_local = 0;
@@ -1251,6 +1376,7 @@ MQTT_START:
         HAL_Delay(500);
         HAL_IWDG_Refresh(&hiwdg);
         retry_count_local++;
+        Checkpoint_Set(CHK_20_MQTT_SUB, (uint16_t)retry_count_local);
         if (retry_count_local >= 5)
         {
             retry_count_local = 0;
@@ -1270,6 +1396,7 @@ MQTT_START:
     HAL_Delay(50);
 
     P("[STEP 7] siap. Pemantauan sensor + URC modem berjalan.\r\n\r\n");
+    Checkpoint_Set(CHK_21_STEP7_DONE, 0);
 
     last_read_tick = HAL_GetTick();
 
@@ -1279,7 +1406,6 @@ MQTT_START:
         UART_ProcessURC();          /* [STEP 6] scan URC modem di superloop */
         UART3_RawMon_Poll();        /* [RAWMON] cetak byte mentah UART3 kalau monitor ON */
         handle_mqtt_reconnect();    /* [STEP 10] auto-reconnect kalau mqtt_disconnected */
-        handle_mqtt_verify();       /* [FIX] verifikasi ground-truth AT+QMTCONN? tiap 60s */
         ProcessCmd();
         Debug_HandleDeferred();     /* [DEBUG CMD] eksekusi KWH,PUB / MQTT,... yang di-antre */
 
@@ -1344,8 +1470,35 @@ MQTT_START:
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
- *  Clock — IDENTIK dengan project asli (kristal eksternal HSE + PLL x9)
+ *  Clock — kristal eksternal HSE + PLL x9, TETAP HSE (bukan fallback ke HSI)
+ *  supaya akurasi baud rate UART/modem tidak berubah — tapi sekarang tahan
+ *  banting terhadap HSE yang telat start di cold-boot.
  * ══════════════════════════════════════════════════════════════════════════ */
+
+/* [FIX BOOT-HANG] HSE_STARTUP_TIMEOUT bawaan HAL cuma 100 ms (lihat
+ * stm32f1xx_hal_conf.h) — di cold-boot (rel tegangan baru mulai naik),
+ * kristal 8 MHz kadang butuh sedikit lebih lama dari itu untuk stabil.
+ * Sebelumnya, begitu percobaan tunggal 100 ms itu gagal, kode langsung
+ * Error_Handler() -> while(1){} PERMANEN, dan di posisi itu IWDG belum
+ * pernah aktif -> device diam total, harus dicabut-pasang manual.
+ *
+ * Sekarang: coba HAL_RCC_OscConfig() beberapa kali (tiap percobaan sudah
+ * py timeout 100 ms sendiri dari HAL, ditambah jeda antar-percobaan),
+ * sambil terus me-refresh IWDG supaya watchdog tidak menganggap ini
+ * macet. Kalau SEMUA percobaan tetap gagal (benar2 ada masalah hardware,
+ * bukan cuma telat), baru dibiarkan diam — TAPI kali ini IWDG SUDAH aktif
+ * (diinit paling awal di main()), jadi watchdog akan mereset MCU dalam
+ * ~26 detik dan device otomatis reboot & mencoba dari awal lagi, alih2
+ * diam permanen. */
+#define HSE_RETRY_MAX_ATTEMPTS   8
+#define HSE_RETRY_DELAY_MS       50
+
+/* [DIAGNOSTIK] Berapa kali HSE gagal start sebelum akhirnya sukses (0 =
+ * langsung sukses di percobaan pertama, normal). Dicetak di banner boot
+ * supaya kejadian "HSE telat start" di lapangan bisa terpantau dari log
+ * serial debug, tanpa perlu osiloskop. Variabelnya sendiri dideklarasikan
+ * di atas dekat hiwdg supaya terlihat oleh banner boot di main(). */
+
 void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
@@ -1359,7 +1512,28 @@ void SystemClock_Config(void)
     RCC_OscInitStruct.PLL.PLLState     = RCC_PLL_ON;
     RCC_OscInitStruct.PLL.PLLSource    = RCC_PLLSOURCE_HSE;
     RCC_OscInitStruct.PLL.PLLMUL       = RCC_PLL_MUL9;
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
+
+    HAL_StatusTypeDef osc_status = HAL_ERROR;
+    for (int attempt = 1; attempt <= HSE_RETRY_MAX_ATTEMPTS; attempt++)
+    {
+        HAL_IWDG_Refresh(&hiwdg);   /* IWDG sudah aktif sejak awal main() — jaga tetap hidup selama retry wajar */
+
+        osc_status = HAL_RCC_OscConfig(&RCC_OscInitStruct);
+        if (osc_status == HAL_OK) { hse_retry_used = (uint32_t)(attempt - 1); break; }
+
+        /* Matikan HSE dulu supaya percobaan berikutnya start bersih dari
+         * kondisi gagal sebelumnya, bukan menumpuk state yang aneh. */
+        __HAL_RCC_HSE_CONFIG(RCC_HSE_OFF);
+        HAL_Delay(HSE_RETRY_DELAY_MS);
+    }
+
+    if (osc_status != HAL_OK)
+    {
+        /* Semua percobaan gagal — SENGAJA tidak refresh IWDG lagi di sini,
+         * supaya watchdog (sudah aktif) benar2 memicu reset MCU dalam
+         * waktu wajar (~26 detik) alih2 diam permanen tanpa recovery. */
+        while (1) { }
+    }
 
     RCC_ClkInitStruct.ClockType      = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
                                      | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
@@ -1368,6 +1542,26 @@ void SystemClock_Config(void)
     RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
     if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) Error_Handler();
+
+    /* [FIX ROOT-CAUSE] Baris ini SEBELUMNYA HILANG dari ADE7880_Test —
+     * dibandingkan dengan New_KWH_EC25 yang punya blok identik ini.
+     *
+     * Tanpa memilih RTCClockSelection secara eksplisit, bit RTCSEL di
+     * RCC_BDCR (domain BACKUP) tidak pernah di-set oleh firmware ini
+     * sendiri. RTCSEL cuma "kebetulan" tetap LSI kalau sebelumnya SUDAH
+     * pernah di-set oleh firmware lain (mis. New_KWH_EC25) DAN power
+     * belum pernah benar2 hilang sejak itu (RCC_BDCR persisten lintas
+     * reflash/reset, HANYA reset oleh hilangnya VDD/VBAT total). Begitu
+     * listrik benar2 dicabut-colok dan backup domain ikut kosong, RTCSEL
+     * kembali ke default "no clock" -> MX_RTC_Init() di rtc.c menunggu
+     * RTC siap tanpa clock yang jalan -> timeout -> Error_Handler() ->
+     * device gagal boot. Ini akar masalah "harus flash New_KWH dulu baru
+     * ADE7880_Test bisa jalan, tapi mati kalau dicabut-colok power". */
+    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC | RCC_PERIPHCLK_ADC;
+    PeriphClkInit.RTCClockSelection    = RCC_RTCCLKSOURCE_LSI;
+    PeriphClkInit.AdcClockSelection    = RCC_ADCPCLK2_DIV6;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) Error_Handler();
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
