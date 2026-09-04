@@ -526,6 +526,28 @@ static void handle_mqtt_reconnect(void)
     }
 }
 
+static uint32_t mqtt_verify_next_tick = 0;
+#define MQTT_VERIFY_INTERVAL_MS  60000U   /* cek ground-truth tiap 60 detik */
+
+static void handle_mqtt_verify(void)
+{
+    if (mqtt_disconnected) return;   /* sudah diketahui putus — biar handle_mqtt_reconnect() yang urus */
+
+    uint32_t now = HAL_GetTick();
+    if (now < mqtt_verify_next_tick) return;
+    mqtt_verify_next_tick = now + MQTT_VERIFY_INTERVAL_MS;
+
+    int state = -1;
+    MQTT_StatusTypeDef st = MQTT_QueryConnState(&state);
+
+    if (st != MQTT_OK || state != 3)
+    {
+        Pf("\r\n[MQTT] Verifikasi AT+QMTCONN? -> state=%d (bukan 3/connected), "
+           "tandai TERPUTUS\r\n", state);
+        mqtt_disconnected = true;
+    }
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
  *  Konversi mentah → bernilai (sama persis dengan KWH.c project asli)
  * ══════════════════════════════════════════════════════════════════════════ */
@@ -624,27 +646,27 @@ static void DoRead(void)
     Pf("\r\n===== #%lu  t=%lu ms  durasi=%lu ms =====\r\n",
        (unsigned long)read_count, (unsigned long)HAL_GetTick(), (unsigned long)dt);
 
-    P("-- RAW (langsung dari SPI, sebelum konversi) --\r\n");
-    Pf("  AVRMS=0x%08lX (%9ld)   AIRMS=0x%08lX (%9ld)\r\n",
-       (unsigned long)ade_raw_AVRMS, (long)sx24(ade_raw_AVRMS),
-       (unsigned long)ade_raw_AIRMS, (long)sx24(ade_raw_AIRMS));
-    Pf("  BVRMS=0x%08lX (%9ld)   BIRMS=0x%08lX (%9ld)\r\n",
-       (unsigned long)ade_raw_BVRMS, (long)sx24(ade_raw_BVRMS),
-       (unsigned long)ade_raw_BIRMS, (long)sx24(ade_raw_BIRMS));
-    Pf("  CVRMS=0x%08lX (%9ld)   CIRMS=0x%08lX (%9ld)\r\n",
-       (unsigned long)ade_raw_CVRMS, (long)sx24(ade_raw_CVRMS),
-       (unsigned long)ade_raw_CIRMS, (long)sx24(ade_raw_CIRMS));
-    Pf("  NIRMS=0x%08lX (%9ld)\r\n",
-       (unsigned long)ade_raw_NIRMS, (long)sx24(ade_raw_NIRMS));
-
-    if (ade_en_getPFf)
-        Pf("  APF=0x%04X BPF=0x%04X CPF=0x%04X | APER=0x%04X BPER=0x%04X CPER=0x%04X\r\n",
-           ade_raw_APF, ade_raw_BPF, ade_raw_CPF,
-           ade_raw_APER, ade_raw_BPER, ade_raw_CPER);
-    if (ade_en_getPOW)
-        Pf("  AWATT=0x%08lX BWATT=0x%08lX CWATT=0x%08lX\r\n",
-           (unsigned long)ade_raw_AWATT, (unsigned long)ade_raw_BWATT,
-           (unsigned long)ade_raw_CWATT);
+//    P("-- RAW (langsung dari SPI, sebelum konversi) --\r\n");
+//    Pf("  AVRMS=0x%08lX (%9ld)   AIRMS=0x%08lX (%9ld)\r\n",
+//       (unsigned long)ade_raw_AVRMS, (long)sx24(ade_raw_AVRMS),
+//       (unsigned long)ade_raw_AIRMS, (long)sx24(ade_raw_AIRMS));
+//    Pf("  BVRMS=0x%08lX (%9ld)   BIRMS=0x%08lX (%9ld)\r\n",
+//       (unsigned long)ade_raw_BVRMS, (long)sx24(ade_raw_BVRMS),
+//       (unsigned long)ade_raw_BIRMS, (long)sx24(ade_raw_BIRMS));
+//    Pf("  CVRMS=0x%08lX (%9ld)   CIRMS=0x%08lX (%9ld)\r\n",
+//       (unsigned long)ade_raw_CVRMS, (long)sx24(ade_raw_CVRMS),
+//       (unsigned long)ade_raw_CIRMS, (long)sx24(ade_raw_CIRMS));
+//    Pf("  NIRMS=0x%08lX (%9ld)\r\n",
+//       (unsigned long)ade_raw_NIRMS, (long)sx24(ade_raw_NIRMS));
+//
+//    if (ade_en_getPFf)
+//        Pf("  APF=0x%04X BPF=0x%04X CPF=0x%04X | APER=0x%04X BPER=0x%04X CPER=0x%04X\r\n",
+//           ade_raw_APF, ade_raw_BPF, ade_raw_CPF,
+//           ade_raw_APER, ade_raw_BPER, ade_raw_CPER);
+//    if (ade_en_getPOW)
+//        Pf("  AWATT=0x%08lX BWATT=0x%08lX CWATT=0x%08lX\r\n",
+//           (unsigned long)ade_raw_AWATT, (unsigned long)ade_raw_BWATT,
+//           (unsigned long)ade_raw_CWATT);
 
     P("-- HASIL KALIBRASI (format sinkron New_KWH) --\r\n");
     Debug_Print_Sensor(&pwr_val, WH);
@@ -1144,16 +1166,16 @@ int main(void)
 
     P("\r\n\r\n");
     P("##########################################################\r\n");
-    P("#   ADE7880 READ TEST  —  firmware diagnostik            #\r\n");
-    P("#   STM32F103RGTx @72MHz (HSE+PLLx9)  IWDG ~26 s         #\r\n");
-    P("#   [STEP 2] I2C1 + FRAM aktif  [STEP 3] RTC/ADC/TIM    #\r\n");
-    P("#   [STEP 4] Relay DO1 aktif                            #\r\n");
-    P("#   [STEP 5] USART3+UART4 clocked, IRQn ON              #\r\n");
-    P("#   [STEP 6] Modem EC25 ON + AT sync 115200            #\r\n");
-    P("#   [STEP 7] MQTT (PJUTS style, URC 90s) ke broker      #\r\n");
-    P("#   [STEP 9] Downlink H:R (kirim data) / H:S (relay)    #\r\n");
-    P("#   [STEP 10] Auto-reconnect MQTT (backoff 5s..60s)     #\r\n");
-    P("#   [STEP 3] RTC + ADC + TIM aktif (idle peripheral)   #\r\n");
+    P("#   SMART KWH  —  firmware Ver260903            			#\r\n");
+    P("#   STM32F103RGTx 								         #\r\n");
+//    P("#   [STEP 2] I2C1 + FRAM aktif  						   #\r\n");
+//    P("#   [STEP 4] Relay DO1 aktif                            #\r\n");
+//    P("#   [STEP 5] USART3+UART4 clocked, IRQn ON              #\r\n");
+//    P("#   [STEP 6] Modem EC25 ON + AT sync 115200            #\r\n");
+//    P("#   [STEP 7] MQTT (PJUTS style, URC 90s) ke broker      #\r\n");
+//    P("#   [STEP 9] Downlink H:R (kirim data) / H:S (relay)    #\r\n");
+//    P("#   [STEP 10] Auto-reconnect MQTT (backoff 5s..60s)     #\r\n");
+//    P("#   [STEP 3] RTC + ADC + TIM aktif (idle peripheral)   #\r\n");
     P("##########################################################\r\n");
     Pf("  getDataPOW (0xE5xx) default : %s\r\n", ade_en_getPOW ? "ON" : "OFF");
     if (hse_retry_used > 0)
@@ -1205,9 +1227,9 @@ int main(void)
     Checkpoint_Set(CHK_11_UID_LOAD, 0);
 
     /* [STEP 4] Relay awal OFF (aman) */
-    Relay_Set(0);
-    P("[REL] relay awal = OFF\r\n");
-    Checkpoint_Set(CHK_12_RELAY_INIT, 0);
+    Relay_Set(1);
+    P("[REL] relay awal = ONN\r\n");
+    Checkpoint_Set(CHK_12_RELAY_INIT, 1);
 
     /* ══════════════════════════════════════════════════════════════════════
      *  [STEP 6] Aktifkan RX huart3 + power-on modem EC25 + AT sync
@@ -1406,6 +1428,7 @@ MQTT_START:
         UART_ProcessURC();          /* [STEP 6] scan URC modem di superloop */
         UART3_RawMon_Poll();        /* [RAWMON] cetak byte mentah UART3 kalau monitor ON */
         handle_mqtt_reconnect();    /* [STEP 10] auto-reconnect kalau mqtt_disconnected */
+        handle_mqtt_verify();
         ProcessCmd();
         Debug_HandleDeferred();     /* [DEBUG CMD] eksekusi KWH,PUB / MQTT,... yang di-antre */
 
